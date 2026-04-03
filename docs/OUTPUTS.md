@@ -29,7 +29,7 @@ This is the preferred machine-readable contract for OpenClaw or any robot runner
 
 Read these fields first:
 
-- `automation_summary`: short decision payload with status, recommended action, suggested retry time, and file locations
+- `automation_summary`: short decision payload with status, fixed schema, recommended action, suggested retry time, and file locations
 - `next_run`: retry guidance derived from the latest cooldown state
 - `summary`: human-readable aggregated daily result
 - `runtime_state`: persisted account state snapshot after the run
@@ -38,9 +38,13 @@ Read these fields first:
 
 For scheduling and status checks, prefer:
 
+- `automation_summary.schema_version`
 - `automation_summary.status`
 - `automation_summary.recommended_action`
+- `automation_summary.reason_code`
+- `automation_summary.should_run_now`
 - `automation_summary.suggested_not_before`
+- `automation_summary.suggested_command`
 - `summary.execute_successful_attempts`
 - `summary.execute_failed_attempts`
 - `summary.execute_blocked_rounds`

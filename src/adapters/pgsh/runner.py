@@ -162,6 +162,8 @@ def _task_summary(task: dict) -> dict:
 
 
 def _api_ok(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
     return payload.get("code") == 0
 
 
@@ -1000,10 +1002,26 @@ def _build_automation_summary(
         status = "idle"
         recommended_action = "inspect_probe_or_whitelist"
 
+    suggested_command_parts = [
+        "python -m src.cli pgsh-daily",
+        f"--confirmed-whitelist {confirmed_whitelist_file}",
+        f"--state-file {state_file}",
+    ]
+    if account_index is not None:
+        suggested_command_parts.append(f"--account-index {account_index}")
+    for channel in channels:
+        suggested_command_parts.append(f"--channel {channel}")
+    suggested_command_parts.append("--no-refresh-whitelist")
+
     return {
+        "schema_version": 1,
         "status": status,
         "recommended_action": recommended_action,
+        "reason_code": next_run.get("reason"),
+        "should_run_now": not deferred_channels,
+        "cooldown_active": bool(deferred_channels),
         "account_index": account_index,
+        "primary_channel": None if not channels else channels[0],
         "channels": list(channels),
         "confirmed_whitelist_file": confirmed_whitelist_file,
         "state_file": state_file,
@@ -1016,6 +1034,7 @@ def _build_automation_summary(
         "deferred_channels": deferred_channels,
         "suggested_not_before": next_run.get("suggested_not_before"),
         "wait_seconds": next_run.get("wait_seconds"),
+        "suggested_command": " ".join(suggested_command_parts),
     }
 
 

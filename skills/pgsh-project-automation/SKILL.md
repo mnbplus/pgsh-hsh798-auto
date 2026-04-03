@@ -60,6 +60,8 @@ If `summary.execute_successful_attempts` is positive and no cooldown is active, 
 
 For robot orchestration, prefer `automation_summary` as the short contract and fall back to `summary`, `next_run`, and `runtime_state` only when more detail is needed.
 
+For a concise OpenClaw-oriented contract, read [references/openclaw-integration.md](references/openclaw-integration.md).
+
 ## Account onboarding
 
 For a new PGSH account:
