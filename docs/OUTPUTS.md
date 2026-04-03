@@ -10,6 +10,7 @@ Common files:
 - `pgsh_execute_YYYYMMDD_HHMMSS.json`
 - `pgsh_probe_YYYYMMDD_HHMMSS.json`
 - `pgsh_daily_YYYYMMDD_HHMMSS.json`
+- `hsh798_snapshot_YYYYMMDD_HHMMSS.json`
 - `*_latest.json`
 - `*_manifest.json`
 
@@ -20,6 +21,14 @@ Common files:
 - `meta`: command metadata, selected channels, account source, schema version, and command-specific parameters
 - `summary`: aggregated counts such as valid accounts, planned attempts, successes, failures, and block signals
 - `rows`: per-account detailed results including raw API responses and execution details
+
+## HSH798 snapshot shape
+
+`hsh798-snapshot` currently writes a list of per-account rows.
+
+- Each row includes account identity fields plus the favorited device list
+- With `--include-status` enabled, each row also includes `device_statuses`
+- `summary.available_devices` and `summary.busy_devices` are derived from the best known idle signal `data.device.gene.status == 99`
 
 ## Daily contract
 
