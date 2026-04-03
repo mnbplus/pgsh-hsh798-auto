@@ -17,6 +17,8 @@ This repo's CLI was tightened on 2026-04-02 to match the examples and the new pe
 - `pgsh-execute` now supports `--delay-seconds` so successful attempts can be throttled more gently.
 - `pgsh-daily` now writes a machine-friendly daily bundle, tracks cooldown state, and can suggest when the next safe run should happen.
 - PGSH batch outputs are now returned as `meta` + `summary` + `rows`.
+- Bundle-producing commands now default to redacted raw payloads. Use `--debug-raw` only when you explicitly need full raw API responses in output files.
+- PGSH signing values can now be overridden through environment variables such as `PGHSH_PGSH_APP_VERSION`, `PGHSH_PGSH_APP_SECRET`, `PGHSH_PGSH_ALIPAY_APP_SECRET`, `PGHSH_PGSH_AUTH_APP_VERSION`, and `PGHSH_PGSH_AUTH_APP_SECRET`.
 
 ## Examples
 
@@ -26,6 +28,7 @@ python -m src.cli pgsh-info --account-index 0
 python -m src.cli pgsh-tasks --account-index 0 --channel alipay
 python -m src.cli pgsh-save-account --token <TOKEN> --phone-brand Xiaomi --account-index 0
 python -m src.cli pgsh-snapshot --accounts configs/accounts.json --output-dir outputs --channel all
+python -m src.cli pgsh-snapshot --account-index 0 --channel android_app --debug-raw
 python -m src.cli pgsh-snapshot --account-index 0 --channel android_app
 python -m src.cli pgsh-execute --accounts configs/accounts.json --whitelist configs/pgsh_task_whitelist.json --output-dir outputs --channel all
 python -m src.cli pgsh-execute --account-index 0 --channel android_app --dry-run

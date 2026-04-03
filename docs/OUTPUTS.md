@@ -56,3 +56,11 @@ For scheduling and status checks, prefer:
 - Preserve a stable `*_latest.json` path for automations
 - Store enough context to compare token validity and channel health over time
 - Expose cooldown and retry state without requiring the caller to parse low-level task details
+
+## Raw payload mode
+
+Batch and daily snapshot bundles now default to `meta.raw_mode = "redacted"`.
+
+- Redacted mode keeps machine-readable summary fields and masks obvious secrets and PII
+- Use `--debug-raw` on bundle-producing commands only when you explicitly need full raw API payloads for debugging
+- `hsh798-snapshot`, `pgsh-snapshot`, `pgsh-execute`, `pgsh-probe`, and `pgsh-daily` all support this switch

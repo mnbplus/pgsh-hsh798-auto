@@ -251,6 +251,7 @@ def pgsh_snapshot(
     token: str | None = typer.Option(None, "--token", help="Run snapshot for one PGSH token only."),
     account_index: int | None = typer.Option(None, "--account-index", help="Run snapshot for one configured account."),
     phone_brand: str | None = typer.Option(None, "--phone-brand", help="Override phoneBrand header."),
+    debug_raw: bool = typer.Option(False, "--debug-raw/--redact-raw", help="Include full raw API payloads in output files."),
 ):
     selected_account, selected_account_index = resolve_pgsh_batch_selection(
         token=token,
@@ -265,6 +266,7 @@ def pgsh_snapshot(
             channel_mode=channel,
             selected_account=selected_account,
             selected_account_index=selected_account_index,
+            debug_raw=debug_raw,
         )
     )
 
@@ -283,6 +285,7 @@ def pgsh_execute(
     delay_jitter_seconds: float = typer.Option(DEFAULT_EXECUTE_DELAY_JITTER_SECONDS, "--delay-jitter-seconds", help="Random jitter around the delay between successful attempts."),
     max_attempts_per_task: int | None = typer.Option(DEFAULT_EXECUTE_MAX_ATTEMPTS_PER_TASK, "--max-attempts-per-task", min=1, help="Cap how many times one task can be attempted in a single execution round."),
     max_successful_attempts_per_channel: int | None = typer.Option(DEFAULT_EXECUTE_MAX_SUCCESSES_PER_CHANNEL, "--max-successful-attempts-per-channel", min=1, help="Stop a channel early after this many successful attempts in one round."),
+    debug_raw: bool = typer.Option(False, "--debug-raw/--redact-raw", help="Include full raw API payloads in output files."),
 ):
     selected_account, selected_account_index = resolve_pgsh_batch_selection(
         token=token,
@@ -303,6 +306,7 @@ def pgsh_execute(
             delay_jitter_seconds=delay_jitter_seconds,
             max_attempts_per_task=max_attempts_per_task,
             max_successful_attempts_per_channel=max_successful_attempts_per_channel,
+            debug_raw=debug_raw,
         )
     )
 
@@ -325,6 +329,7 @@ def pgsh_probe(
     export_confirmed_whitelist: bool = typer.Option(False, "--export-confirmed-whitelist", help="Merge confirmed task codes into configs/pgsh_task_whitelist_confirmed.json."),
     export_whitelist_auto: bool = typer.Option(False, "--export-whitelist-auto", help="Also write a latest confirmed whitelist bundle into outputs/."),
     merge_export: bool = typer.Option(True, "--merge-export/--replace-export", help="Merge exported task codes into an existing whitelist file by default."),
+    debug_raw: bool = typer.Option(False, "--debug-raw/--redact-raw", help="Include full raw API payloads in output files."),
 ):
     selected_account, selected_account_index = resolve_pgsh_batch_selection(
         token=token,
@@ -352,6 +357,7 @@ def pgsh_probe(
             stop_on_blocked=stop_on_blocked,
             export_whitelist_file=export_target,
             merge_export=merge_export,
+            debug_raw=debug_raw,
         )
     )
 
@@ -378,6 +384,7 @@ def pgsh_daily(
     block_cooldown_seconds: float = typer.Option(DEFAULT_DAILY_BLOCK_COOLDOWN_SECONDS, "--block-cooldown-seconds", help="Wait this long before retrying the next execution round after an HTTP block."),
     state_file: str = typer.Option(DEFAULT_DAILY_STATE_FILE, "--state-file", help="Persistent runtime state file for cooldowns and learned task results."),
     respect_cooldown: bool = typer.Option(True, "--respect-cooldown/--ignore-cooldown", help="Skip channels still inside a persisted cooldown window."),
+    debug_raw: bool = typer.Option(False, "--debug-raw/--redact-raw", help="Include full raw API payloads in output files."),
 ):
     selected_account, selected_account_index = resolve_pgsh_batch_selection(
         token=token,
@@ -406,6 +413,7 @@ def pgsh_daily(
             block_cooldown_seconds=block_cooldown_seconds,
             state_file=state_file,
             respect_cooldown=respect_cooldown,
+            debug_raw=debug_raw,
         )
     )
 
@@ -519,8 +527,9 @@ def hsh798_stop(
 def hsh798_snapshot(
     accounts: str = typer.Option("configs/accounts.json", "--accounts", help="Account store JSON file."),
     output_dir: str = typer.Option("outputs", "--output-dir", help="Directory for snapshot files."),
+    debug_raw: bool = typer.Option(False, "--debug-raw/--redact-raw", help="Include full raw API payloads in output files."),
 ):
-    out = run_hsh798_snapshot(accounts_file=accounts, output_dir=output_dir)
+    out = run_hsh798_snapshot(accounts_file=accounts, output_dir=output_dir, debug_raw=debug_raw)
     echo_json({"command": "hsh798-snapshot", "output": str(out)})
 
 
