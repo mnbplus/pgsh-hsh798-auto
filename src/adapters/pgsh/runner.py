@@ -11,6 +11,7 @@ from src.core.storage import load_accounts, upsert_pgsh_account, write_json, wri
 
 
 VALID_CHANNELS = ("android_app", "alipay")
+BLOCKLIKE_HTTP_STATUS = {401, 403, 429}
 SCHEMA_VERSION = 1
 DEFAULT_EXECUTE_DELAY_SECONDS = 6.0
 DEFAULT_EXECUTE_DELAY_JITTER_SECONDS = 3.0
@@ -161,6 +162,49 @@ def _task_summary(task: dict) -> dict:
     }
 
 
+def _task_learning_snapshot(task_profiles: dict[str, dict] | None, task_code: str) -> dict:
+    profile = (task_profiles or {}).get(task_code) or {}
+    successes = max(_to_int(profile.get("successes")) or 0, 0)
+    failures = max(_to_int(profile.get("failures")) or 0, 0)
+    return {
+        "successes": successes,
+        "failures": failures,
+        "last_success_at": profile.get("last_success_at"),
+        "last_failure_at": profile.get("last_failure_at"),
+        "last_http_status": _to_int(profile.get("last_http_status")),
+    }
+
+
+def _execute_task_priority(task_meta: dict, task_profiles: dict[str, dict] | None) -> tuple:
+    learning = _task_learning_snapshot(task_profiles, task_meta["taskCode"])
+    total = learning["successes"] + learning["failures"]
+    success_rate = learning["successes"] / total if total else 0.0
+    blocked_penalty = 1 if learning["last_http_status"] in BLOCKLIKE_HTTP_STATUS else 0
+    unseen_penalty = 1 if learning["successes"] <= 0 else 0
+    return (
+        blocked_penalty,
+        unseen_penalty,
+        -success_rate,
+        learning["failures"],
+        -learning["successes"],
+        -int(task_meta.get("attemptsRemaining") or 0),
+        task_meta["taskCode"],
+    )
+
+
+def _probe_task_priority(task_meta: dict, task_profiles: dict[str, dict] | None) -> tuple:
+    learning = _task_learning_snapshot(task_profiles, task_meta["taskCode"])
+    blocked_penalty = 1 if learning["last_http_status"] in BLOCKLIKE_HTTP_STATUS else 0
+    return (
+        blocked_penalty,
+        learning["failures"] > 0,
+        learning["failures"],
+        0 if learning["successes"] > 0 else 1,
+        -int(task_meta.get("attemptsRemaining") or 0),
+        task_meta["taskCode"],
+    )
+
+
 def _api_ok(payload: dict) -> bool:
     if not isinstance(payload, dict):
         return False
@@ -205,6 +249,7 @@ def _execute_channel(
     channel: str,
     whitelist: set[str],
     *,
+    task_profiles: dict[str, dict] | None,
     dry_run: bool,
     delay_seconds: float,
     delay_jitter_seconds: float,
@@ -254,7 +299,12 @@ def _execute_channel(
         result["eligible_tasks"] += 1
         attempts_planned = attempts if max_attempts_per_task is None else min(attempts, max_attempts_per_task)
         result["planned_attempts"] += attempts_planned
-        action = {**task_meta, "attempts_planned": attempts_planned, "attempts": []}
+        action = {
+            **task_meta,
+            "attempts_planned": attempts_planned,
+            "attempts": [],
+            "learning": _task_learning_snapshot(task_profiles, code),
+        }
         eligible_actions.append(action)
 
         if dry_run:
@@ -266,7 +316,7 @@ def _execute_channel(
         result["actions"] = eligible_actions
         return result
 
-    eligible_actions.sort(key=lambda action: (action["attempts_planned"], action["taskCode"]))
+    eligible_actions.sort(key=lambda action: _execute_task_priority(action, task_profiles))
     remaining_attempts = {action["taskCode"]: action["attempts_planned"] for action in eligible_actions}
     disabled_tasks: set[str] = set()
 
@@ -326,6 +376,7 @@ def _probe_channel(
     channel: str,
     whitelist: set[str] | None,
     *,
+    task_profiles: dict[str, dict] | None,
     delay_seconds: float,
     max_attempts_per_task: int,
     max_tasks: int | None,
@@ -374,6 +425,7 @@ def _probe_channel(
 
         candidates.append((task, task_meta))
 
+    candidates.sort(key=lambda item: _probe_task_priority(item[1], task_profiles))
     if max_tasks is not None:
         candidates = candidates[:max_tasks]
     result["candidate_tasks"] = len(candidates)
@@ -384,7 +436,12 @@ def _probe_channel(
             break
 
         attempts_planned = min(task_meta["attemptsRemaining"], max_attempts_per_task)
-        probe = {**task_meta, "attempts_planned": attempts_planned, "attempts": []}
+        probe = {
+            **task_meta,
+            "attempts_planned": attempts_planned,
+            "attempts": [],
+            "learning": _task_learning_snapshot(task_profiles, task_meta["taskCode"]),
+        }
         result["probed_tasks"] += 1
         result["planned_attempts"] += attempts_planned
 
@@ -523,6 +580,7 @@ def _build_execute_row(
     max_attempts_per_task: int | None,
     max_successful_attempts_per_channel: int | None,
     skip_checkin: bool,
+    task_profiles_by_channel: dict[str, dict[str, dict]] | None,
 ) -> dict:
     row = _account_row_base(account_index, item, source, channels)
 
@@ -560,6 +618,7 @@ def _build_execute_row(
                 client,
                 channel,
                 whitelist,
+                task_profiles=(task_profiles_by_channel or {}).get(channel),
                 dry_run=dry_run,
                 delay_seconds=delay_seconds,
                 delay_jitter_seconds=delay_jitter_seconds,
@@ -609,6 +668,7 @@ def _build_probe_row(
     max_tasks: int | None,
     pending_only: bool,
     stop_on_blocked: bool,
+    task_profiles_by_channel: dict[str, dict[str, dict]] | None,
 ) -> dict:
     row = _account_row_base(account_index, item, source, channels)
 
@@ -639,6 +699,7 @@ def _build_probe_row(
                 client,
                 channel,
                 whitelist,
+                task_profiles=(task_profiles_by_channel or {}).get(channel),
                 delay_seconds=delay_seconds,
                 max_attempts_per_task=max_attempts_per_task,
                 max_tasks=max_tasks,
@@ -1199,6 +1260,16 @@ def _build_skipped_execute_result(
     }
 
 
+def _task_profiles_by_channel(account_state: dict | None, channels: tuple[str, ...]) -> dict[str, dict[str, dict]]:
+    profiles: dict[str, dict[str, dict]] = {}
+    channel_states = (account_state or {}).get("channels") or {}
+    for channel in channels:
+        task_stats = (channel_states.get(channel) or {}).get("task_stats") or {}
+        if isinstance(task_stats, dict):
+            profiles[channel] = task_stats
+    return profiles
+
+
 def _output_files(output_dir: str | Path, prefix: str, stamped_file: Path) -> dict:
     base = Path(output_dir)
     return {
@@ -1306,6 +1377,7 @@ def run_pgsh_execute(
     max_successful_attempts_per_channel: int | None = DEFAULT_EXECUTE_MAX_SUCCESSES_PER_CHANNEL,
     skip_checkin: bool = False,
     include_rows: bool = False,
+    task_profiles_by_channel: dict[str, dict[str, dict]] | None = None,
 ) -> dict:
     channels = normalize_channels(channel_mode)
     whitelist = load_task_whitelist(whitelist_file)
@@ -1332,6 +1404,7 @@ def run_pgsh_execute(
                     max_attempts_per_task=max_attempts_per_task,
                     max_successful_attempts_per_channel=max_successful_attempts_per_channel,
                     skip_checkin=skip_checkin,
+                    task_profiles_by_channel=task_profiles_by_channel,
                 )
             )
 
@@ -1393,6 +1466,7 @@ def run_pgsh_probe(
     export_whitelist_file: str | None = None,
     merge_export: bool = True,
     include_rows: bool = False,
+    task_profiles_by_channel: dict[str, dict[str, dict]] | None = None,
 ) -> dict:
     channels = normalize_channels(channel_mode)
     whitelist = load_task_whitelist(whitelist_file) if whitelist_file else None
@@ -1418,6 +1492,7 @@ def run_pgsh_probe(
                     max_tasks=max_tasks,
                     pending_only=pending_only,
                     stop_on_blocked=stop_on_blocked,
+                    task_profiles_by_channel=task_profiles_by_channel,
                 )
             )
 
@@ -1540,6 +1615,7 @@ def run_pgsh_daily(
         item=selected_account,
         account_index=selected_account_index,
     )
+    task_profiles_by_channel = _task_profiles_by_channel(account_state, channels)
     active_channels, deferred_channels = (
         _filter_channels_by_cooldown(channels, account_state, now) if respect_cooldown else (channels, [])
     )
@@ -1593,6 +1669,7 @@ def run_pgsh_daily(
             export_whitelist_file=confirmed_whitelist_file,
             merge_export=True,
             include_rows=True,
+            task_profiles_by_channel=task_profiles_by_channel,
         )
         _update_runtime_state_from_probe(
             account_state,
@@ -1600,6 +1677,7 @@ def run_pgsh_daily(
             blocked_cooldown_seconds=block_cooldown_seconds,
             now=datetime.now(timezone.utc).astimezone(),
         )
+        task_profiles_by_channel = _task_profiles_by_channel(account_state, channels)
         active_channels, deferred_channels = _filter_channels_by_cooldown(
             channels,
             account_state,
@@ -1642,6 +1720,7 @@ def run_pgsh_daily(
             max_successful_attempts_per_channel=execute_max_successful_attempts_per_channel,
             skip_checkin=True,
             include_rows=True,
+            task_profiles_by_channel=task_profiles_by_channel,
         )
         execute_rounds.append(execute_result)
         current_now = datetime.now(timezone.utc).astimezone()
@@ -1651,6 +1730,7 @@ def run_pgsh_daily(
             blocked_cooldown_seconds=block_cooldown_seconds,
             now=current_now,
         )
+        task_profiles_by_channel = _task_profiles_by_channel(account_state, channels)
 
         blocked = _execute_result_blocked(execute_result)
         if not blocked:
