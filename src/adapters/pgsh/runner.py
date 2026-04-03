@@ -63,7 +63,7 @@ def run_pgsh_login(
     if verify_error is not None:
         result["verify_error"] = verify_error
 
-    result["valid"] = bool(verify_payload and verify_payload.get("code") == 0 and verify_payload.get("data") is not None)
+    result["valid"] = bool(PgshClient.response_ok(verify_payload) and verify_payload.get("data") is not None)
     if not result["valid"]:
         return result
 
@@ -164,7 +164,7 @@ def _task_summary(task: dict) -> dict:
 def _api_ok(payload: dict) -> bool:
     if not isinstance(payload, dict):
         return False
-    return payload.get("code") == 0
+    return PgshClient.response_ok(payload)
 
 
 def _capture_step(row: dict, key: str, fn):
@@ -291,7 +291,7 @@ def _execute_channel(
             progressed = True
             try:
                 response = client.complete_task(task_code=code, channel=channel)
-                success = response.get("code") == 0 and response.get("data") is True
+                success = PgshClient.response_ok(response) and response.get("data") is True
                 action["attempts"].append({"attempt": attempt_no, "success": success, "response": response})
                 if success:
                     result["successful_attempts"] += 1
@@ -390,7 +390,7 @@ def _probe_channel(
 
         for attempt in range(1, attempts_planned + 1):
             response = client.complete_task(task_code=task_meta["taskCode"], channel=channel)
-            success = response.get("code") == 0 and response.get("data") is True
+            success = PgshClient.response_ok(response) and response.get("data") is True
             probe["attempts"].append({"attempt": attempt, "success": success, "response": response})
             if success:
                 result["successful_attempts"] += 1
@@ -468,7 +468,7 @@ def _build_snapshot_row(
 
     _capture_step(row, "warmup", client.warmup_session)
     user_info = _capture_step(row, "user_info", client.user_info)
-    row["valid"] = bool(user_info and user_info.get("code") == 0 and user_info.get("data") is not None)
+    row["valid"] = bool(PgshClient.response_ok(user_info) and user_info.get("data") is not None)
     _capture_step(row, "balance", client.balance)
     _capture_step(row, "captcha", client.captcha_status)
 
@@ -528,7 +528,7 @@ def _build_execute_row(
 
     _capture_step(row, "warmup", client.warmup_session)
     user_info = _capture_step(row, "user_info", client.user_info)
-    row["valid"] = bool(user_info and user_info.get("code") == 0 and user_info.get("data") is not None)
+    row["valid"] = bool(PgshClient.response_ok(user_info) and user_info.get("data") is not None)
     _capture_step(row, "balance_before", client.balance)
     _capture_step(row, "captcha_before", client.captcha_status)
     checkin = None
@@ -550,7 +550,7 @@ def _build_execute_row(
         "failed_attempts": 0,
         "dry_run_attempts": 0,
         "checkin_skipped": dry_run or skip_checkin,
-        "checkin_success": bool(checkin and checkin.get("code") == 0),
+        "checkin_success": bool(PgshClient.response_ok(checkin)),
         "error_count": 0,
     }
 
@@ -614,7 +614,7 @@ def _build_probe_row(
 
     _capture_step(row, "warmup", client.warmup_session)
     user_info = _capture_step(row, "user_info", client.user_info)
-    row["valid"] = bool(user_info and user_info.get("code") == 0 and user_info.get("data") is not None)
+    row["valid"] = bool(PgshClient.response_ok(user_info) and user_info.get("data") is not None)
     _capture_step(row, "balance_before", client.balance)
     _capture_step(row, "captcha_before", client.captcha_status)
 
@@ -1551,7 +1551,7 @@ def run_pgsh_daily(
             errors.append({"step": "warmup", "error": str(exc)})
         try:
             user_info = client.user_info()
-            valid = bool(user_info and user_info.get("code") == 0 and user_info.get("data") is not None)
+            valid = bool(PgshClient.response_ok(user_info) and user_info.get("data") is not None)
         except Exception as exc:
             errors.append({"step": "user_info", "error": str(exc)})
         try:
@@ -1681,7 +1681,7 @@ def run_pgsh_daily(
         "valid": valid,
         "checkin_code": checkin_payload.get("code") if isinstance(checkin_payload, dict) else None,
         "checkin_msg": checkin_payload.get("msg") if isinstance(checkin_payload, dict) else None,
-        "checkin_success": bool(isinstance(checkin_payload, dict) and checkin_payload.get("code") == 0),
+        "checkin_success": bool(PgshClient.response_ok(checkin_payload)),
         "balance_before_integral": None if balance_before is None else (balance_before.get("data") or {}).get("integral"),
         "balance_after_checkin_integral": None if balance_after is None else (balance_after.get("data") or {}).get("integral"),
         "captcha_before": None if captcha_before is None else captcha_before.get("data"),
