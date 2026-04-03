@@ -10,6 +10,7 @@ Common files:
 - `pgsh_execute_YYYYMMDD_HHMMSS.json`
 - `pgsh_probe_YYYYMMDD_HHMMSS.json`
 - `pgsh_daily_YYYYMMDD_HHMMSS.json`
+- `hsh798_snapshot_YYYYMMDD_HHMMSS.json`
 - `*_latest.json`
 - `*_manifest.json`
 
@@ -20,6 +21,14 @@ Common files:
 - `meta`: command metadata, selected channels, account source, schema version, and command-specific parameters
 - `summary`: aggregated counts such as valid accounts, planned attempts, successes, failures, and block signals
 - `rows`: per-account detailed results including raw API responses and execution details
+
+## HSH798 snapshot shape
+
+`hsh798-snapshot` currently writes a list of per-account rows.
+
+- Each row includes account identity fields plus the favorited device list
+- With `--include-status` enabled, each row also includes `device_statuses`
+- `summary.available_devices` and `summary.busy_devices` are derived from the best known idle signal `data.device.gene.status == 99`
 
 ## Daily contract
 
@@ -56,3 +65,11 @@ For scheduling and status checks, prefer:
 - Preserve a stable `*_latest.json` path for automations
 - Store enough context to compare token validity and channel health over time
 - Expose cooldown and retry state without requiring the caller to parse low-level task details
+
+## Raw payload mode
+
+Batch and daily snapshot bundles now default to `meta.raw_mode = "redacted"`.
+
+- Redacted mode keeps machine-readable summary fields and masks obvious secrets and PII
+- Use `--debug-raw` on bundle-producing commands only when you explicitly need full raw API payloads for debugging
+- `hsh798-snapshot`, `pgsh-snapshot`, `pgsh-execute`, `pgsh-probe`, and `pgsh-daily` all support this switch

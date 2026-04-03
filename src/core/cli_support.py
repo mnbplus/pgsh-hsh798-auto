@@ -24,6 +24,18 @@ def mask_secret(value: str, keep: int = 4) -> str:
     return f"{value[:keep]}{'*' * masked_length}{value[-keep:]}"
 
 
+def mask_phone(value: str, keep_prefix: int = 3, keep_suffix: int = 4) -> str:
+    """Mask phone numbers using a more readable mobile-friendly pattern."""
+    if not value:
+        return ""
+    keep_prefix = max(0, keep_prefix)
+    keep_suffix = max(0, keep_suffix)
+    if len(value) <= keep_prefix + keep_suffix:
+        return "*" * len(value)
+    masked_length = max(3, len(value) - keep_prefix - keep_suffix)
+    return f"{value[:keep_prefix]}{'*' * masked_length}{value[-keep_suffix:]}"
+
+
 def dump_account_store(store: AccountStore, *, reveal_secrets: bool) -> dict:
     """Return account store data with secrets masked by default for safe CLI display."""
     data = store.model_dump()
@@ -33,12 +45,12 @@ def dump_account_store(store: AccountStore, *, reveal_secrets: bool) -> dict:
         item["token"] = mask_secret(item.get("token", ""))
         phone = item.get("phone")
         if phone:
-            item["phone"] = mask_secret(phone, keep=3)
+            item["phone"] = mask_phone(phone)
     for item in data.get("hsh798", []):
         item["token"] = mask_secret(item.get("token", ""))
         phone = item.get("phone")
         if phone:
-            item["phone"] = mask_secret(phone, keep=3)
+            item["phone"] = mask_phone(phone)
     return data
 
 
@@ -49,10 +61,19 @@ def resolve_pgsh_account(
     accounts_file: Path,
     account_index: int | None,
 ) -> PgshAccountEntry:
-    if token and account_index is not None:
+    """Resolve a single PGSH account from explicit token input or stored account index.
+
+    Blank token strings are treated the same as an omitted token so CLI callers do not
+    accidentally bypass account-index validation with `--token ""`.
+    """
+    normalized_token = token.strip() if token is not None else None
+    if normalized_token == "":
+        normalized_token = None
+
+    if normalized_token and account_index is not None:
         raise typer.BadParameter("provide either --token or --account-index, not both")
-    if token:
-        return PgshAccountEntry(token=token, phone_brand=phone_brand or "Xiaomi")
+    if normalized_token:
+        return PgshAccountEntry(token=normalized_token, phone_brand=phone_brand or "Xiaomi")
     if account_index is None:
         raise typer.BadParameter("provide --token or --account-index")
 
@@ -102,10 +123,19 @@ def resolve_hsh798_account(
     accounts_file: Path,
     account_index: int | None,
 ) -> Hsh798AccountEntry:
-    if token and account_index is not None:
+    """Resolve a single HSH798 account from explicit token input or stored account index.
+
+    Blank token strings are treated the same as an omitted token so CLI callers do not
+    accidentally bypass account-index validation with `--token ""`.
+    """
+    normalized_token = token.strip() if token is not None else None
+    if normalized_token == "":
+        normalized_token = None
+
+    if normalized_token and account_index is not None:
         raise typer.BadParameter("provide either --token or --account-index, not both")
-    if token:
-        return Hsh798AccountEntry(token=token)
+    if normalized_token:
+        return Hsh798AccountEntry(token=normalized_token)
     if account_index is None:
         raise typer.BadParameter("provide --token or --account-index")
 

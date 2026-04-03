@@ -55,3 +55,8 @@ class SnapshotManifest(BaseModel):
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="PGHSH_", extra="ignore")
     accounts_file: Path = Path("configs/accounts.json")
+    pgsh_app_version: str = "1.82.1"
+    pgsh_app_secret: str = "nFU9pbG8YQoAe1kFh+E7eyrdlSLglwEJeA0wwHB1j5o="
+    pgsh_alipay_app_secret: str = "Ew+ZSuppXZoA9YzBHgHmRvzt0Bw1CpwlQQtSl49QNhY="
+    pgsh_auth_app_version: str = "1.57.0"
+    pgsh_auth_app_secret: str = "xl8v4s/5qpBLvN+8CzFx7vVjy31NgXXcedU7G0QpOMM="

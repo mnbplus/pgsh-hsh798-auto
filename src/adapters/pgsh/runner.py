@@ -7,10 +7,12 @@ import time
 
 from src.adapters.pgsh.client import PgshClient
 from src.core.models import PgshAccountEntry
+from src.core.output_sanitizer import sanitize_output_bundle
 from src.core.storage import load_accounts, upsert_pgsh_account, write_json, write_snapshot_bundle
 
 
 VALID_CHANNELS = ("android_app", "alipay")
+BLOCKLIKE_HTTP_STATUS = {401, 403, 429}
 SCHEMA_VERSION = 1
 DEFAULT_EXECUTE_DELAY_SECONDS = 6.0
 DEFAULT_EXECUTE_DELAY_JITTER_SECONDS = 3.0
@@ -63,7 +65,7 @@ def run_pgsh_login(
     if verify_error is not None:
         result["verify_error"] = verify_error
 
-    result["valid"] = bool(verify_payload and verify_payload.get("code") == 0 and verify_payload.get("data") is not None)
+    result["valid"] = bool(PgshClient.response_ok(verify_payload) and verify_payload.get("data") is not None)
     if not result["valid"]:
         return result
 
@@ -161,10 +163,53 @@ def _task_summary(task: dict) -> dict:
     }
 
 
+def _task_learning_snapshot(task_profiles: dict[str, dict] | None, task_code: str) -> dict:
+    profile = (task_profiles or {}).get(task_code) or {}
+    successes = max(_to_int(profile.get("successes")) or 0, 0)
+    failures = max(_to_int(profile.get("failures")) or 0, 0)
+    return {
+        "successes": successes,
+        "failures": failures,
+        "last_success_at": profile.get("last_success_at"),
+        "last_failure_at": profile.get("last_failure_at"),
+        "last_http_status": _to_int(profile.get("last_http_status")),
+    }
+
+
+def _execute_task_priority(task_meta: dict, task_profiles: dict[str, dict] | None) -> tuple:
+    learning = _task_learning_snapshot(task_profiles, task_meta["taskCode"])
+    total = learning["successes"] + learning["failures"]
+    success_rate = learning["successes"] / total if total else 0.0
+    blocked_penalty = 1 if learning["last_http_status"] in BLOCKLIKE_HTTP_STATUS else 0
+    unseen_penalty = 1 if learning["successes"] <= 0 else 0
+    return (
+        blocked_penalty,
+        unseen_penalty,
+        -success_rate,
+        learning["failures"],
+        -learning["successes"],
+        -int(task_meta.get("attemptsRemaining") or 0),
+        task_meta["taskCode"],
+    )
+
+
+def _probe_task_priority(task_meta: dict, task_profiles: dict[str, dict] | None) -> tuple:
+    learning = _task_learning_snapshot(task_profiles, task_meta["taskCode"])
+    blocked_penalty = 1 if learning["last_http_status"] in BLOCKLIKE_HTTP_STATUS else 0
+    return (
+        blocked_penalty,
+        learning["failures"] > 0,
+        learning["failures"],
+        0 if learning["successes"] > 0 else 1,
+        -int(task_meta.get("attemptsRemaining") or 0),
+        task_meta["taskCode"],
+    )
+
+
 def _api_ok(payload: dict) -> bool:
     if not isinstance(payload, dict):
         return False
-    return payload.get("code") == 0
+    return PgshClient.response_ok(payload)
 
 
 def _capture_step(row: dict, key: str, fn):
@@ -205,6 +250,7 @@ def _execute_channel(
     channel: str,
     whitelist: set[str],
     *,
+    task_profiles: dict[str, dict] | None,
     dry_run: bool,
     delay_seconds: float,
     delay_jitter_seconds: float,
@@ -254,7 +300,12 @@ def _execute_channel(
         result["eligible_tasks"] += 1
         attempts_planned = attempts if max_attempts_per_task is None else min(attempts, max_attempts_per_task)
         result["planned_attempts"] += attempts_planned
-        action = {**task_meta, "attempts_planned": attempts_planned, "attempts": []}
+        action = {
+            **task_meta,
+            "attempts_planned": attempts_planned,
+            "attempts": [],
+            "learning": _task_learning_snapshot(task_profiles, code),
+        }
         eligible_actions.append(action)
 
         if dry_run:
@@ -266,7 +317,7 @@ def _execute_channel(
         result["actions"] = eligible_actions
         return result
 
-    eligible_actions.sort(key=lambda action: (action["attempts_planned"], action["taskCode"]))
+    eligible_actions.sort(key=lambda action: _execute_task_priority(action, task_profiles))
     remaining_attempts = {action["taskCode"]: action["attempts_planned"] for action in eligible_actions}
     disabled_tasks: set[str] = set()
 
@@ -291,7 +342,7 @@ def _execute_channel(
             progressed = True
             try:
                 response = client.complete_task(task_code=code, channel=channel)
-                success = response.get("code") == 0 and response.get("data") is True
+                success = PgshClient.response_ok(response) and response.get("data") is True
                 action["attempts"].append({"attempt": attempt_no, "success": success, "response": response})
                 if success:
                     result["successful_attempts"] += 1
@@ -326,6 +377,7 @@ def _probe_channel(
     channel: str,
     whitelist: set[str] | None,
     *,
+    task_profiles: dict[str, dict] | None,
     delay_seconds: float,
     max_attempts_per_task: int,
     max_tasks: int | None,
@@ -374,6 +426,7 @@ def _probe_channel(
 
         candidates.append((task, task_meta))
 
+    candidates.sort(key=lambda item: _probe_task_priority(item[1], task_profiles))
     if max_tasks is not None:
         candidates = candidates[:max_tasks]
     result["candidate_tasks"] = len(candidates)
@@ -384,13 +437,18 @@ def _probe_channel(
             break
 
         attempts_planned = min(task_meta["attemptsRemaining"], max_attempts_per_task)
-        probe = {**task_meta, "attempts_planned": attempts_planned, "attempts": []}
+        probe = {
+            **task_meta,
+            "attempts_planned": attempts_planned,
+            "attempts": [],
+            "learning": _task_learning_snapshot(task_profiles, task_meta["taskCode"]),
+        }
         result["probed_tasks"] += 1
         result["planned_attempts"] += attempts_planned
 
         for attempt in range(1, attempts_planned + 1):
             response = client.complete_task(task_code=task_meta["taskCode"], channel=channel)
-            success = response.get("code") == 0 and response.get("data") is True
+            success = PgshClient.response_ok(response) and response.get("data") is True
             probe["attempts"].append({"attempt": attempt, "success": success, "response": response})
             if success:
                 result["successful_attempts"] += 1
@@ -468,7 +526,7 @@ def _build_snapshot_row(
 
     _capture_step(row, "warmup", client.warmup_session)
     user_info = _capture_step(row, "user_info", client.user_info)
-    row["valid"] = bool(user_info and user_info.get("code") == 0 and user_info.get("data") is not None)
+    row["valid"] = bool(PgshClient.response_ok(user_info) and user_info.get("data") is not None)
     _capture_step(row, "balance", client.balance)
     _capture_step(row, "captcha", client.captcha_status)
 
@@ -523,12 +581,13 @@ def _build_execute_row(
     max_attempts_per_task: int | None,
     max_successful_attempts_per_channel: int | None,
     skip_checkin: bool,
+    task_profiles_by_channel: dict[str, dict[str, dict]] | None,
 ) -> dict:
     row = _account_row_base(account_index, item, source, channels)
 
     _capture_step(row, "warmup", client.warmup_session)
     user_info = _capture_step(row, "user_info", client.user_info)
-    row["valid"] = bool(user_info and user_info.get("code") == 0 and user_info.get("data") is not None)
+    row["valid"] = bool(PgshClient.response_ok(user_info) and user_info.get("data") is not None)
     _capture_step(row, "balance_before", client.balance)
     _capture_step(row, "captcha_before", client.captcha_status)
     checkin = None
@@ -550,7 +609,7 @@ def _build_execute_row(
         "failed_attempts": 0,
         "dry_run_attempts": 0,
         "checkin_skipped": dry_run or skip_checkin,
-        "checkin_success": bool(checkin and checkin.get("code") == 0),
+        "checkin_success": bool(PgshClient.response_ok(checkin)),
         "error_count": 0,
     }
 
@@ -560,6 +619,7 @@ def _build_execute_row(
                 client,
                 channel,
                 whitelist,
+                task_profiles=(task_profiles_by_channel or {}).get(channel),
                 dry_run=dry_run,
                 delay_seconds=delay_seconds,
                 delay_jitter_seconds=delay_jitter_seconds,
@@ -609,12 +669,13 @@ def _build_probe_row(
     max_tasks: int | None,
     pending_only: bool,
     stop_on_blocked: bool,
+    task_profiles_by_channel: dict[str, dict[str, dict]] | None,
 ) -> dict:
     row = _account_row_base(account_index, item, source, channels)
 
     _capture_step(row, "warmup", client.warmup_session)
     user_info = _capture_step(row, "user_info", client.user_info)
-    row["valid"] = bool(user_info and user_info.get("code") == 0 and user_info.get("data") is not None)
+    row["valid"] = bool(PgshClient.response_ok(user_info) and user_info.get("data") is not None)
     _capture_step(row, "balance_before", client.balance)
     _capture_step(row, "captcha_before", client.captcha_status)
 
@@ -639,6 +700,7 @@ def _build_probe_row(
                 client,
                 channel,
                 whitelist,
+                task_profiles=(task_profiles_by_channel or {}).get(channel),
                 delay_seconds=delay_seconds,
                 max_attempts_per_task=max_attempts_per_task,
                 max_tasks=max_tasks,
@@ -846,29 +908,53 @@ def _merge_probe_export_payload(existing_payload: object, new_payload: dict) -> 
     }
 
 
-def load_pgsh_runtime_state(path: str | Path) -> dict:
+def load_pgsh_runtime_state(path: str | Path) -> tuple[dict, dict]:
     state_path = Path(path)
     if not state_path.exists():
-        return {"accounts": {}}
+        return {"accounts": {}}, {"state_recovered": False, "reason": None, "backup_file": None}
 
-    raw = state_path.read_text(encoding="utf-8-sig").strip()
-    if not raw:
-        return {"accounts": {}}
+    raw = state_path.read_text(encoding="utf-8-sig")
+    if not raw.strip():
+        return _recover_pgsh_runtime_state(state_path, reason="empty_file")
 
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return {"accounts": {}}
+        return _recover_pgsh_runtime_state(state_path, reason="invalid_json")
     if not isinstance(data, dict):
-        return {"accounts": {}}
+        return _recover_pgsh_runtime_state(state_path, reason="invalid_top_level")
     accounts = data.get("accounts")
     if not isinstance(accounts, dict):
-        data["accounts"] = {}
-    return data
+        return _recover_pgsh_runtime_state(state_path, reason="invalid_accounts")
+    return data, {"state_recovered": False, "reason": None, "backup_file": None}
 
 
 def save_pgsh_runtime_state(path: str | Path, state: dict) -> Path:
     return write_json(Path(path), state)
+
+
+def _recover_pgsh_runtime_state(state_path: Path, *, reason: str) -> tuple[dict, dict]:
+    backup_file = _backup_corrupt_pgsh_runtime_state(state_path)
+    return {
+        "accounts": {},
+    }, {
+        "state_recovered": True,
+        "reason": reason,
+        "backup_file": None if backup_file is None else str(backup_file),
+    }
+
+
+def _backup_corrupt_pgsh_runtime_state(state_path: Path) -> Path | None:
+    if not state_path.exists():
+        return None
+    timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d_%H%M%S_%f")
+    suffix = state_path.suffix or ".json"
+    backup_path = state_path.with_name(f"{state_path.stem}.corrupt.{timestamp}{suffix}")
+    try:
+        backup_path.write_bytes(state_path.read_bytes())
+    except OSError:
+        return None
+    return backup_path
 
 
 def _account_state_key(item: PgshAccountEntry, account_index: int | None) -> str:
@@ -1009,8 +1095,7 @@ def _build_automation_summary(
     ]
     if account_index is not None:
         suggested_command_parts.append(f"--account-index {account_index}")
-    for channel in channels:
-        suggested_command_parts.append(f"--channel {channel}")
+    suggested_command_parts.append(f"--channel {_channel_mode_from_channels(channels)}")
     suggested_command_parts.append("--no-refresh-whitelist")
 
     return {
@@ -1176,6 +1261,16 @@ def _build_skipped_execute_result(
     }
 
 
+def _task_profiles_by_channel(account_state: dict | None, channels: tuple[str, ...]) -> dict[str, dict[str, dict]]:
+    profiles: dict[str, dict[str, dict]] = {}
+    channel_states = (account_state or {}).get("channels") or {}
+    for channel in channels:
+        task_stats = (channel_states.get(channel) or {}).get("task_stats") or {}
+        if isinstance(task_stats, dict):
+            profiles[channel] = task_stats
+    return profiles
+
+
 def _output_files(output_dir: str | Path, prefix: str, stamped_file: Path) -> dict:
     base = Path(output_dir)
     return {
@@ -1220,6 +1315,7 @@ def run_pgsh_snapshot(
     *,
     selected_account: PgshAccountEntry | None = None,
     selected_account_index: int | None = None,
+    debug_raw: bool = False,
 ) -> dict:
     channels = normalize_channels(channel_mode)
     configured_accounts, token_ready_accounts, targets = _collect_target_accounts(
@@ -1259,6 +1355,8 @@ def run_pgsh_snapshot(
         ),
         "rows": rows,
     }
+    bundle["meta"]["raw_mode"] = "debug" if debug_raw else "redacted"
+    bundle = sanitize_output_bundle(bundle, debug_raw=debug_raw)
     stamped_file = write_snapshot_bundle(output_dir, "pgsh_snapshot", bundle)
     return {
         "command": "pgsh-snapshot",
@@ -1283,6 +1381,8 @@ def run_pgsh_execute(
     max_successful_attempts_per_channel: int | None = DEFAULT_EXECUTE_MAX_SUCCESSES_PER_CHANNEL,
     skip_checkin: bool = False,
     include_rows: bool = False,
+    task_profiles_by_channel: dict[str, dict[str, dict]] | None = None,
+    debug_raw: bool = False,
 ) -> dict:
     channels = normalize_channels(channel_mode)
     whitelist = load_task_whitelist(whitelist_file)
@@ -1309,6 +1409,7 @@ def run_pgsh_execute(
                     max_attempts_per_task=max_attempts_per_task,
                     max_successful_attempts_per_channel=max_successful_attempts_per_channel,
                     skip_checkin=skip_checkin,
+                    task_profiles_by_channel=task_profiles_by_channel,
                 )
             )
 
@@ -1342,6 +1443,8 @@ def run_pgsh_execute(
         ),
         "rows": rows,
     }
+    bundle["meta"]["raw_mode"] = "debug" if debug_raw else "redacted"
+    bundle = sanitize_output_bundle(bundle, debug_raw=debug_raw)
     stamped_file = write_snapshot_bundle(output_dir, "pgsh_execute", bundle)
     result = {
         "command": "pgsh-execute",
@@ -1370,6 +1473,8 @@ def run_pgsh_probe(
     export_whitelist_file: str | None = None,
     merge_export: bool = True,
     include_rows: bool = False,
+    task_profiles_by_channel: dict[str, dict[str, dict]] | None = None,
+    debug_raw: bool = False,
 ) -> dict:
     channels = normalize_channels(channel_mode)
     whitelist = load_task_whitelist(whitelist_file) if whitelist_file else None
@@ -1395,6 +1500,7 @@ def run_pgsh_probe(
                     max_tasks=max_tasks,
                     pending_only=pending_only,
                     stop_on_blocked=stop_on_blocked,
+                    task_profiles_by_channel=task_profiles_by_channel,
                 )
             )
 
@@ -1429,6 +1535,8 @@ def run_pgsh_probe(
         ),
         "rows": rows,
     }
+    bundle["meta"]["raw_mode"] = "debug" if debug_raw else "redacted"
+    bundle = sanitize_output_bundle(bundle, debug_raw=debug_raw)
     stamped_file = write_snapshot_bundle(output_dir, "pgsh_probe", bundle)
 
     export_file = None
@@ -1494,10 +1602,11 @@ def run_pgsh_daily(
     block_cooldown_seconds: float = DEFAULT_DAILY_BLOCK_COOLDOWN_SECONDS,
     state_file: str = DEFAULT_DAILY_STATE_FILE,
     respect_cooldown: bool = True,
+    debug_raw: bool = False,
 ) -> dict:
     channels = normalize_channels(channel_mode)
     selected_mode = _selection_mode(selected_account, selected_account_index)
-    runtime_state = load_pgsh_runtime_state(state_file)
+    runtime_state, state_load = load_pgsh_runtime_state(state_file)
 
     daily_started_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     now = datetime.now(timezone.utc).astimezone()
@@ -1517,6 +1626,7 @@ def run_pgsh_daily(
         item=selected_account,
         account_index=selected_account_index,
     )
+    task_profiles_by_channel = _task_profiles_by_channel(account_state, channels)
     active_channels, deferred_channels = (
         _filter_channels_by_cooldown(channels, account_state, now) if respect_cooldown else (channels, [])
     )
@@ -1528,7 +1638,7 @@ def run_pgsh_daily(
             errors.append({"step": "warmup", "error": str(exc)})
         try:
             user_info = client.user_info()
-            valid = bool(user_info and user_info.get("code") == 0 and user_info.get("data") is not None)
+            valid = bool(PgshClient.response_ok(user_info) and user_info.get("data") is not None)
         except Exception as exc:
             errors.append({"step": "user_info", "error": str(exc)})
         try:
@@ -1570,12 +1680,20 @@ def run_pgsh_daily(
             export_whitelist_file=confirmed_whitelist_file,
             merge_export=True,
             include_rows=True,
+            task_profiles_by_channel=task_profiles_by_channel,
+            debug_raw=debug_raw,
         )
         _update_runtime_state_from_probe(
             account_state,
             probe_result,
             blocked_cooldown_seconds=block_cooldown_seconds,
             now=datetime.now(timezone.utc).astimezone(),
+        )
+        task_profiles_by_channel = _task_profiles_by_channel(account_state, channels)
+        active_channels, deferred_channels = _filter_channels_by_cooldown(
+            channels,
+            account_state,
+            datetime.now(timezone.utc).astimezone(),
         )
 
     execute_rounds: list[dict] = []
@@ -1614,6 +1732,8 @@ def run_pgsh_daily(
             max_successful_attempts_per_channel=execute_max_successful_attempts_per_channel,
             skip_checkin=True,
             include_rows=True,
+            task_profiles_by_channel=task_profiles_by_channel,
+            debug_raw=debug_raw,
         )
         execute_rounds.append(execute_result)
         current_now = datetime.now(timezone.utc).astimezone()
@@ -1623,19 +1743,17 @@ def run_pgsh_daily(
             blocked_cooldown_seconds=block_cooldown_seconds,
             now=current_now,
         )
+        task_profiles_by_channel = _task_profiles_by_channel(account_state, channels)
 
         blocked = _execute_result_blocked(execute_result)
         if not blocked:
             break
-        if round_index >= max(1, max_execute_rounds):
-            break
-        if block_cooldown_seconds > 0:
-            time.sleep(block_cooldown_seconds)
-        active_channels, deferred_channels = (
-            _filter_channels_by_cooldown(channels, account_state, datetime.now(timezone.utc).astimezone())
-            if respect_cooldown
-            else (channels, [])
+        active_channels, deferred_channels = _filter_channels_by_cooldown(
+            channels,
+            account_state,
+            current_now,
         )
+        break
 
     execute_result = execute_rounds[-1]
     execute_aggregate = {
@@ -1648,9 +1766,7 @@ def run_pgsh_daily(
     }
 
     latest_now = datetime.now(timezone.utc).astimezone()
-    latest_active_channels, latest_deferred_channels = (
-        _filter_channels_by_cooldown(channels, account_state, latest_now) if respect_cooldown else (channels, [])
-    )
+    latest_active_channels, latest_deferred_channels = _filter_channels_by_cooldown(channels, account_state, latest_now)
     next_run = _suggest_next_daily_run_time(latest_deferred_channels, latest_now)
 
     daily_summary = {
@@ -1658,11 +1774,12 @@ def run_pgsh_daily(
         "valid": valid,
         "checkin_code": checkin_payload.get("code") if isinstance(checkin_payload, dict) else None,
         "checkin_msg": checkin_payload.get("msg") if isinstance(checkin_payload, dict) else None,
-        "checkin_success": bool(isinstance(checkin_payload, dict) and checkin_payload.get("code") == 0),
+        "checkin_success": bool(PgshClient.response_ok(checkin_payload)),
         "balance_before_integral": None if balance_before is None else (balance_before.get("data") or {}).get("integral"),
         "balance_after_checkin_integral": None if balance_after is None else (balance_after.get("data") or {}).get("integral"),
         "captcha_before": None if captcha_before is None else captcha_before.get("data"),
         "captcha_after": None if captcha_after is None else captcha_after.get("data"),
+        "active_channels_after_run": list(latest_active_channels),
         "deferred_channels": latest_deferred_channels,
         "probe_confirmed_task_count": 0 if probe_result is None else probe_result["summary"].get("confirmed_task_count"),
         "execute_rounds": execute_aggregate["rounds"],
@@ -1670,6 +1787,7 @@ def run_pgsh_daily(
         "execute_failed_attempts": execute_aggregate["failed_attempts"],
         "execute_blocked_rounds": execute_aggregate["blocked_rounds"],
         "execute_checkin_skipped_accounts": execute_result["summary"].get("checkin_skipped_accounts"),
+        "state_recovered": bool(state_load.get("state_recovered")),
         "errors": len(errors),
     }
     account_state["last_daily_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
@@ -1705,6 +1823,9 @@ def run_pgsh_daily(
             "max_execute_rounds": max_execute_rounds,
             "block_cooldown_seconds": block_cooldown_seconds,
             "state_file": state_file,
+            "state_recovered": bool(state_load.get("state_recovered")),
+            "state_recovery_reason": state_load.get("reason"),
+            "state_recovery_backup_file": state_load.get("backup_file"),
             "respect_cooldown": respect_cooldown,
             "account_state_key": account_state_key,
             "selection_mode": selected_mode,
@@ -1719,9 +1840,12 @@ def run_pgsh_daily(
         "execute_rounds": execute_rounds,
         "execute_aggregate": execute_aggregate,
         "state_saved_to": state_saved_to,
+        "state_load": state_load,
         "runtime_state": runtime_state.get("accounts", {}).get(account_state_key),
         "errors": errors,
     }
+    bundle["meta"]["raw_mode"] = "debug" if debug_raw else "redacted"
+    bundle = sanitize_output_bundle(bundle, debug_raw=debug_raw)
     files = {
         "stamped": None,
         "latest": str(Path(output_dir) / "pgsh_daily_latest.json"),

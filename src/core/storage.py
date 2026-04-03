@@ -67,13 +67,14 @@ def write_snapshot_bundle(output_dir: str | Path, prefix: str, data: Any) -> Pat
 
     Returns the timestamped snapshot path so callers can keep a stable audit trail
     while still reading the companion `<prefix>_latest.json` file for the newest view.
-    Prefixes are normalized to a filesystem-safe slug so callers can pass labels with
-    spaces or punctuation without accidentally producing awkward file names.
+    Prefixes are normalized to an ASCII-only filesystem-safe slug so callers can pass
+    labels with spaces, punctuation, or non-ASCII text without accidentally producing
+    awkward cross-platform file names.
     """
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    safe_prefix = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in prefix.strip())
+    safe_prefix = "".join(ch if ch.isascii() and (ch.isalnum() or ch in {"-", "_"}) else "_" for ch in prefix.strip())
     while "__" in safe_prefix:
         safe_prefix = safe_prefix.replace("__", "_")
     safe_prefix = safe_prefix.strip("_")
@@ -128,12 +129,15 @@ def upsert_pgsh_account(
     normalized_token = token.strip()
     normalized_phone = phone.strip() if phone is not None else None
     normalized_user_name = user_name.strip() if user_name is not None else None
+    normalized_note = note.strip() if note is not None else None
     if not normalized_token:
         raise ValueError("token must not be blank")
     if normalized_phone is not None and not normalized_phone:
         raise ValueError("phone must not be blank when provided")
     if normalized_user_name is not None and not normalized_user_name:
         normalized_user_name = None
+    if normalized_note is not None and not normalized_note:
+        normalized_note = None
 
     store = load_accounts(path)
 
@@ -162,7 +166,7 @@ def upsert_pgsh_account(
             "token": normalized_token,
             "phone_brand": ((phone_brand or current.phone_brand or "Xiaomi").strip() or "Xiaomi"),
             "user_name": normalized_user_name if normalized_user_name is not None else current.user_name,
-            "note": note if note is not None else current.note,
+            "note": normalized_note if normalized_note is not None else current.note,
             "last_login_at": last_login_at if last_login_at is not None else current.last_login_at,
         }
     )
@@ -183,10 +187,19 @@ def upsert_hsh798_account(
 ) -> tuple[AccountStore, int, Hsh798AccountEntry]:
     normalized_phone = phone.strip()
     normalized_token = token.strip()
+    normalized_uid = uid.strip() if uid is not None else None
+    normalized_eid = eid.strip() if eid is not None else None
+    normalized_note = note.strip() if note is not None else None
     if not normalized_phone:
         raise ValueError("phone must not be blank")
     if not normalized_token:
         raise ValueError("token must not be blank")
+    if normalized_uid is not None and not normalized_uid:
+        normalized_uid = None
+    if normalized_eid is not None and not normalized_eid:
+        normalized_eid = None
+    if normalized_note is not None and not normalized_note:
+        normalized_note = None
 
     store = load_accounts(path)
     timestamp = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
@@ -214,9 +227,9 @@ def upsert_hsh798_account(
         update={
             "phone": normalized_phone,
             "token": normalized_token,
-            "uid": uid if uid is not None else current.uid,
-            "eid": eid if eid is not None else current.eid,
-            "note": note if note is not None else current.note,
+            "uid": normalized_uid if normalized_uid is not None else current.uid,
+            "eid": normalized_eid if normalized_eid is not None else current.eid,
+            "note": normalized_note if normalized_note is not None else current.note,
             "last_login_at": timestamp,
         }
     )
