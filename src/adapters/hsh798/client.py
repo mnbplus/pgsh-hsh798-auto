@@ -1,5 +1,7 @@
 import httpx
 
+RETRYABLE_HTTP_STATUS = {408, 425, 429, 500, 502, 503, 504}
+
 
 class Hsh798Client:
     BASE_URL = "https://i.ilife798.com/api/v1"
@@ -21,9 +23,102 @@ class Hsh798Client:
         return {"Authorization": self.token} if self.token else {}
 
     def _request_json(self, method: str, path: str, **kwargs) -> dict:
-        response = self.client.request(method, path, **kwargs)
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = self.client.request(method, path, **kwargs)
+        except httpx.RequestError as exc:
+            return self._request_error_payload(exc)
+
+        parsed_json = True
+        try:
+            body = response.json()
+        except ValueError:
+            parsed_json = False
+            body = None
+
+        if response.is_error:
+            return self._http_error_payload(response, body)
+        if not parsed_json:
+            return self._invalid_json_payload(response)
+
+        return self._normalize_payload(body, http_status=response.status_code)
+
+    @staticmethod
+    def _normalize_payload(payload: object, *, http_status: int | None) -> dict:
+        if isinstance(payload, dict):
+            normalized = dict(payload)
+            api_code = normalized.get("status")
+            ok = api_code == 1 if api_code is not None else True
+        else:
+            normalized = {"data": payload}
+            api_code = None
+            ok = True
+
+        msg = normalized.get("msg")
+        if msg is None and normalized.get("message") is not None:
+            msg = normalized.get("message")
+        normalized.setdefault("data", None)
+        normalized["msg"] = msg
+        return {
+            **normalized,
+            "ok": ok,
+            "api_code": api_code,
+            "http_status": http_status,
+            "retryable": False,
+        }
+
+    @staticmethod
+    def _http_error_payload(response: httpx.Response, body: object) -> dict:
+        payload = dict(body) if isinstance(body, dict) else {}
+        api_code = payload.get("status")
+        msg = payload.get("msg")
+        if msg is None and payload.get("message") is not None:
+            msg = payload.get("message")
+        payload.setdefault("status", 0)
+        payload.setdefault("data", None)
+        payload["msg"] = str(msg or f"HTTP {response.status_code}")
+        payload["ok"] = False
+        payload["api_code"] = api_code if api_code is not None else payload.get("status")
+        payload["http_status"] = response.status_code
+        payload["retryable"] = response.status_code in RETRYABLE_HTTP_STATUS
+        payload["error_type"] = "HTTPStatusError"
+        payload["response_body"] = body if body is not None else response.text
+        return payload
+
+    @staticmethod
+    def _request_error_payload(exc: httpx.RequestError) -> dict:
+        return {
+            "status": 0,
+            "msg": str(exc),
+            "data": None,
+            "ok": False,
+            "api_code": None,
+            "http_status": None,
+            "retryable": isinstance(exc, (httpx.TimeoutException, httpx.TransportError)),
+            "error_type": type(exc).__name__,
+            "response_body": None,
+        }
+
+    @staticmethod
+    def _invalid_json_payload(response: httpx.Response) -> dict:
+        return {
+            "status": 0,
+            "msg": "invalid JSON response",
+            "data": None,
+            "ok": False,
+            "api_code": None,
+            "http_status": response.status_code,
+            "retryable": False,
+            "error_type": "InvalidJSONResponse",
+            "response_body": response.text,
+        }
+
+    @staticmethod
+    def response_ok(data: dict | None) -> bool:
+        if not isinstance(data, dict):
+            return False
+        if isinstance(data.get("ok"), bool):
+            return data["ok"]
+        return data.get("status") == 1
 
     def get_captcha(self, s: str, r: str) -> bytes:
         resp = self.client.get("/captcha/", params={"s": s, "r": r})
@@ -91,4 +186,4 @@ class Hsh798Client:
 
     @staticmethod
     def is_device_list_valid(data: dict) -> bool:
-        return data.get("status") == 1 and data.get("data", {}).get("account") is not None
+        return Hsh798Client.response_ok(data) and data.get("data", {}).get("account") is not None

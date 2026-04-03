@@ -1,6 +1,8 @@
 from urllib.parse import urlparse
 import hashlib
 import time
+from typing import Any
+
 import httpx
 
 APP_VERSION = "1.82.1"
@@ -10,6 +12,7 @@ AUTH_APP_VERSION = "1.57.0"
 AUTH_APP_SECRET = "xl8v4s/5qpBLvN+8CzFx7vVjy31NgXXcedU7G0QpOMM="
 DEFAULT_USER_AGENT = "okhttp/4.12.0"
 AUTH_USER_AGENT = "okhttp/3.14.9"
+RETRYABLE_HTTP_STATUS = {408, 425, 429, 500, 502, 503, 504}
 
 
 class PgshClient:
@@ -100,37 +103,109 @@ class PgshClient:
         user_agent: str = DEFAULT_USER_AGENT,
         phone_brand: str | None = None,
     ) -> dict:
-        response = self.client.request(
-            method,
-            path,
-            data=data,
-            headers=self._headers(
+        try:
+            response = self.client.request(
+                method,
                 path,
-                channel,
-                token=token,
-                app_version=app_version,
-                app_secret=app_secret,
-                user_agent=user_agent,
-                phone_brand=phone_brand,
-            ),
-        )
-        response.raise_for_status()
-        return response.json()
+                data=data,
+                headers=self._headers(
+                    path,
+                    channel,
+                    token=token,
+                    app_version=app_version,
+                    app_secret=app_secret,
+                    user_agent=user_agent,
+                    phone_brand=phone_brand,
+                ),
+            )
+        except httpx.RequestError as exc:
+            return self._request_error_payload(exc)
 
-    @staticmethod
-    def _http_error_payload(exc: httpx.HTTPStatusError) -> dict:
-        response = exc.response
+        parsed_json = True
         try:
             body = response.json()
-        except Exception:
-            body = response.text
+        except ValueError:
+            parsed_json = False
+            body = None
+
+        if response.is_error:
+            return self._http_error_payload(response, body)
+        if not parsed_json:
+            return self._invalid_json_payload(response)
+
+        return self._normalize_payload(body, http_status=response.status_code)
+
+    @classmethod
+    def _normalize_payload(cls, payload: Any, *, http_status: int | None) -> dict:
+        if isinstance(payload, dict):
+            normalized = dict(payload)
+            api_code = normalized.get("code")
+            ok = api_code == 0 if api_code is not None else True
+        else:
+            normalized = {"data": payload}
+            api_code = None
+            ok = True
+
+        normalized.setdefault("data", None)
+        normalized.setdefault("msg", None)
         return {
-            "code": response.status_code,
+            **normalized,
+            "ok": ok,
+            "api_code": api_code,
+            "http_status": http_status,
+            "retryable": False,
+        }
+
+    @classmethod
+    def _http_error_payload(cls, response: httpx.Response, body: Any) -> dict:
+        payload = dict(body) if isinstance(body, dict) else {}
+        api_code = payload.get("code")
+        payload.setdefault("code", response.status_code)
+        payload.setdefault("data", None)
+        payload["msg"] = str(payload.get("msg") or f"HTTP {response.status_code}")
+        payload["ok"] = False
+        payload["api_code"] = api_code if api_code is not None else payload.get("code")
+        payload["http_status"] = response.status_code
+        payload["retryable"] = response.status_code in RETRYABLE_HTTP_STATUS
+        payload["error_type"] = "HTTPStatusError"
+        payload["response_body"] = body if body is not None else response.text
+        return payload
+
+    @staticmethod
+    def _invalid_json_payload(response: httpx.Response) -> dict:
+        return {
+            "code": None,
+            "msg": "invalid JSON response",
+            "data": None,
+            "ok": False,
+            "api_code": None,
+            "http_status": response.status_code,
+            "retryable": False,
+            "error_type": "InvalidJSONResponse",
+            "response_body": response.text,
+        }
+
+    @staticmethod
+    def _request_error_payload(exc: httpx.RequestError) -> dict:
+        return {
+            "code": None,
             "msg": str(exc),
             "data": None,
-            "http_status": response.status_code,
-            "response_body": body,
+            "ok": False,
+            "api_code": None,
+            "http_status": None,
+            "retryable": isinstance(exc, (httpx.TimeoutException, httpx.TransportError)),
+            "error_type": type(exc).__name__,
+            "response_body": None,
         }
+
+    @staticmethod
+    def response_ok(data: dict | None) -> bool:
+        if not isinstance(data, dict):
+            return False
+        if isinstance(data.get("ok"), bool):
+            return data["ok"]
+        return data.get("code") == 0
 
     def warmup_session(self) -> dict:
         if self._session_warmed:
@@ -189,21 +264,15 @@ class PgshClient:
         data = {"taskCode": task_code, "token": self.token}
         if subtask_code:
             data["subtaskCode"] = subtask_code
-        try:
-            return self._request_json("POST", path, channel=channel, data=data)
-        except httpx.HTTPStatusError as exc:
-            return self._http_error_payload(exc)
+        return self._request_json("POST", path, channel=channel, data=data)
 
     def captcha_status(self) -> dict:
         path = "/integralCaptcha/isCaptcha"
         return self._request_json("POST", path, data={"token": self.token})
 
     def token_valid(self) -> bool:
-        try:
-            data = self.user_info()
-            return data.get("code") == 0 and data.get("data") is not None
-        except Exception:
-            return False
+        data = self.user_info()
+        return self.response_ok(data) and data.get("data") is not None
 
     @staticmethod
     def extract_login_auth(data: dict) -> dict[str, str]:
