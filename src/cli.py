@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 
 import typer
 from loguru import logger
@@ -526,7 +527,15 @@ def hsh798_snapshot(
 app.info.help = app.info.help or app.help
 
 
-if __name__ == "__main__":
+def _configure_cli_logging() -> None:
     logger.remove()
-    logger.add(lambda msg: print(msg, end=""))
+    logger.add(sys.stderr)
+
+
+def main() -> None:
+    _configure_cli_logging()
     app()
+
+
+if __name__ == "__main__":
+    main()

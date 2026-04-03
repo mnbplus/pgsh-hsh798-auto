@@ -846,29 +846,53 @@ def _merge_probe_export_payload(existing_payload: object, new_payload: dict) -> 
     }
 
 
-def load_pgsh_runtime_state(path: str | Path) -> dict:
+def load_pgsh_runtime_state(path: str | Path) -> tuple[dict, dict]:
     state_path = Path(path)
     if not state_path.exists():
-        return {"accounts": {}}
+        return {"accounts": {}}, {"state_recovered": False, "reason": None, "backup_file": None}
 
-    raw = state_path.read_text(encoding="utf-8-sig").strip()
-    if not raw:
-        return {"accounts": {}}
+    raw = state_path.read_text(encoding="utf-8-sig")
+    if not raw.strip():
+        return _recover_pgsh_runtime_state(state_path, reason="empty_file")
 
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return {"accounts": {}}
+        return _recover_pgsh_runtime_state(state_path, reason="invalid_json")
     if not isinstance(data, dict):
-        return {"accounts": {}}
+        return _recover_pgsh_runtime_state(state_path, reason="invalid_top_level")
     accounts = data.get("accounts")
     if not isinstance(accounts, dict):
-        data["accounts"] = {}
-    return data
+        return _recover_pgsh_runtime_state(state_path, reason="invalid_accounts")
+    return data, {"state_recovered": False, "reason": None, "backup_file": None}
 
 
 def save_pgsh_runtime_state(path: str | Path, state: dict) -> Path:
     return write_json(Path(path), state)
+
+
+def _recover_pgsh_runtime_state(state_path: Path, *, reason: str) -> tuple[dict, dict]:
+    backup_file = _backup_corrupt_pgsh_runtime_state(state_path)
+    return {
+        "accounts": {},
+    }, {
+        "state_recovered": True,
+        "reason": reason,
+        "backup_file": None if backup_file is None else str(backup_file),
+    }
+
+
+def _backup_corrupt_pgsh_runtime_state(state_path: Path) -> Path | None:
+    if not state_path.exists():
+        return None
+    timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d_%H%M%S_%f")
+    suffix = state_path.suffix or ".json"
+    backup_path = state_path.with_name(f"{state_path.stem}.corrupt.{timestamp}{suffix}")
+    try:
+        backup_path.write_bytes(state_path.read_bytes())
+    except OSError:
+        return None
+    return backup_path
 
 
 def _account_state_key(item: PgshAccountEntry, account_index: int | None) -> str:
@@ -1009,8 +1033,7 @@ def _build_automation_summary(
     ]
     if account_index is not None:
         suggested_command_parts.append(f"--account-index {account_index}")
-    for channel in channels:
-        suggested_command_parts.append(f"--channel {channel}")
+    suggested_command_parts.append(f"--channel {_channel_mode_from_channels(channels)}")
     suggested_command_parts.append("--no-refresh-whitelist")
 
     return {
@@ -1497,7 +1520,7 @@ def run_pgsh_daily(
 ) -> dict:
     channels = normalize_channels(channel_mode)
     selected_mode = _selection_mode(selected_account, selected_account_index)
-    runtime_state = load_pgsh_runtime_state(state_file)
+    runtime_state, state_load = load_pgsh_runtime_state(state_file)
 
     daily_started_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     now = datetime.now(timezone.utc).astimezone()
@@ -1577,6 +1600,11 @@ def run_pgsh_daily(
             blocked_cooldown_seconds=block_cooldown_seconds,
             now=datetime.now(timezone.utc).astimezone(),
         )
+        active_channels, deferred_channels = _filter_channels_by_cooldown(
+            channels,
+            account_state,
+            datetime.now(timezone.utc).astimezone(),
+        )
 
     execute_rounds: list[dict] = []
     if not active_channels:
@@ -1627,15 +1655,12 @@ def run_pgsh_daily(
         blocked = _execute_result_blocked(execute_result)
         if not blocked:
             break
-        if round_index >= max(1, max_execute_rounds):
-            break
-        if block_cooldown_seconds > 0:
-            time.sleep(block_cooldown_seconds)
-        active_channels, deferred_channels = (
-            _filter_channels_by_cooldown(channels, account_state, datetime.now(timezone.utc).astimezone())
-            if respect_cooldown
-            else (channels, [])
+        active_channels, deferred_channels = _filter_channels_by_cooldown(
+            channels,
+            account_state,
+            current_now,
         )
+        break
 
     execute_result = execute_rounds[-1]
     execute_aggregate = {
@@ -1648,9 +1673,7 @@ def run_pgsh_daily(
     }
 
     latest_now = datetime.now(timezone.utc).astimezone()
-    latest_active_channels, latest_deferred_channels = (
-        _filter_channels_by_cooldown(channels, account_state, latest_now) if respect_cooldown else (channels, [])
-    )
+    latest_active_channels, latest_deferred_channels = _filter_channels_by_cooldown(channels, account_state, latest_now)
     next_run = _suggest_next_daily_run_time(latest_deferred_channels, latest_now)
 
     daily_summary = {
@@ -1663,6 +1686,7 @@ def run_pgsh_daily(
         "balance_after_checkin_integral": None if balance_after is None else (balance_after.get("data") or {}).get("integral"),
         "captcha_before": None if captcha_before is None else captcha_before.get("data"),
         "captcha_after": None if captcha_after is None else captcha_after.get("data"),
+        "active_channels_after_run": list(latest_active_channels),
         "deferred_channels": latest_deferred_channels,
         "probe_confirmed_task_count": 0 if probe_result is None else probe_result["summary"].get("confirmed_task_count"),
         "execute_rounds": execute_aggregate["rounds"],
@@ -1670,6 +1694,7 @@ def run_pgsh_daily(
         "execute_failed_attempts": execute_aggregate["failed_attempts"],
         "execute_blocked_rounds": execute_aggregate["blocked_rounds"],
         "execute_checkin_skipped_accounts": execute_result["summary"].get("checkin_skipped_accounts"),
+        "state_recovered": bool(state_load.get("state_recovered")),
         "errors": len(errors),
     }
     account_state["last_daily_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
@@ -1705,6 +1730,9 @@ def run_pgsh_daily(
             "max_execute_rounds": max_execute_rounds,
             "block_cooldown_seconds": block_cooldown_seconds,
             "state_file": state_file,
+            "state_recovered": bool(state_load.get("state_recovered")),
+            "state_recovery_reason": state_load.get("reason"),
+            "state_recovery_backup_file": state_load.get("backup_file"),
             "respect_cooldown": respect_cooldown,
             "account_state_key": account_state_key,
             "selection_mode": selected_mode,
@@ -1719,6 +1747,7 @@ def run_pgsh_daily(
         "execute_rounds": execute_rounds,
         "execute_aggregate": execute_aggregate,
         "state_saved_to": state_saved_to,
+        "state_load": state_load,
         "runtime_state": runtime_state.get("accounts", {}).get(account_state_key),
         "errors": errors,
     }
