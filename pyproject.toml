@@ -1,0 +1,20 @@
+[project]
+name = "pgsh-hsh798-auto"
+version = "0.1.0"
+description = "胖乖生活 / 惠生活798 本地自动化研究工具"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.28.1",
+  "pydantic>=2.11.0",
+  "pydantic-settings>=2.8.0",
+  "loguru>=0.7.3",
+  "typer>=0.16.0"
+]
+
+[project.scripts]
+pgtool = "src.cli:app"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"

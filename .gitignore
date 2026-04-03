@@ -1,0 +1,22 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyc.*
+
+# Build / packaging
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Runtime outputs
+outputs/
+
+# Local env
+.venv/
+.env
+configs/accounts.json
+configs/pgsh_runtime_state.json
+
+# Reference repos are kept local only
+refs/
