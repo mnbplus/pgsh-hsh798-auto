@@ -29,6 +29,34 @@ This command already:
 - writes a machine-friendly bundle to `outputs/pgsh_daily_latest.json`
 - writes/updates runtime state in `configs/pgsh_runtime_state.json`
 
+For recurring automation, this is the safest command to schedule or expose to a robot:
+
+```powershell
+python -m src.cli pgsh-daily --account-index <INDEX> --channel alipay --no-refresh-whitelist --state-file configs/pgsh_runtime_state.json
+```
+
+## Daily run contract
+
+Treat `pgsh-daily` as the machine-facing entrypoint for this repository.
+
+After each run, inspect:
+
+- `outputs/pgsh_daily_latest.json`
+- `configs/pgsh_runtime_state.json`
+
+Read these fields first:
+
+- `summary.execute_successful_attempts`
+- `summary.execute_failed_attempts`
+- `summary.execute_blocked_rounds`
+- `summary.deferred_channels`
+- `next_run`
+- `runtime_state.channels`
+
+If `next_run.reason` is `channel_cooldown`, do not run again before `next_run.suggested_not_before`.
+
+If `summary.execute_successful_attempts` is positive and no cooldown is active, it is acceptable to schedule another run later.
+
 ## Account onboarding
 
 For a new PGSH account:
@@ -85,3 +113,6 @@ Use these fields when reporting status:
 - Do not loop `pgsh-complete` manually in tight bursts.
 - Prefer confirmed whitelist execution over probing once a channel is known-good.
 - When execution is blocked, stop and report the cooldown rather than pushing harder.
+- Favor `alipay` first for long-running automation.
+- Prefer fewer successful attempts per run over aggressive saturation.
+- Only turn on `--refresh-whitelist` when confirmed tasks stop progressing.

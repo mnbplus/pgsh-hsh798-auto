@@ -1,7 +1,7 @@
 interface:
   display_name: "PGSH Automation"
-  short_description: "Run cooldown-aware PGSH account automation in this repo."
-  default_prompt: "Use $pgsh-project-automation to run the PGSH daily workflow in this repository and explain what to do next."
+  short_description: "Onboard PGSH accounts and run cooldown-aware daily automation."
+  default_prompt: "Use $pgsh-project-automation to manage PGSH automation in this repository, including safe daily runs and cooldown decisions."
 
 policy:
   allow_implicit_invocation: true
