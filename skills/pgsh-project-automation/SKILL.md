@@ -1,7 +1,9 @@
 ---
 name: pgsh-project-automation
 description: Run and maintain the PGSH automation workflow in this repository, including SMS login, task probing, cooldown-aware daily execution, balance checks, and result interpretation. Use when working inside the pgsh-hsh798-auto workspace and the user wants to onboard a PGSH account, inspect remaining PGSH tasks, refresh confirmed task codes, run the daily PGSH flow, or decide when the next safe run should happen.
-metadata: {"openclaw":{"requires":{"bins":["python"]}}}
+homepage: "https://github.com/mnbplus/pgsh-hsh798-auto"
+user-invocable: true
+metadata: {"openclaw":{"emoji":"🪙","homepage":"https://github.com/mnbplus/pgsh-hsh798-auto","requires":{"bins":["python"]}}}
 ---
 
 # PGSH Project Automation

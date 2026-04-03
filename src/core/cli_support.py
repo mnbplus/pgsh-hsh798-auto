@@ -25,6 +25,7 @@ def mask_secret(value: str, keep: int = 4) -> str:
 
 
 def dump_account_store(store: AccountStore, *, reveal_secrets: bool) -> dict:
+    """Return account store data with secrets masked by default for safe CLI display."""
     data = store.model_dump()
     if reveal_secrets:
         return data

@@ -1,0 +1,7 @@
+interface:
+  display_name: "PGSH Daily Runner"
+  short_description: "Run the safest PGSH daily flow and honor cooldown state."
+  default_prompt: "Use $pgsh-daily-runner to run the PGSH daily workflow in this repository and tell me when it should run next."
+
+policy:
+  allow_implicit_invocation: true

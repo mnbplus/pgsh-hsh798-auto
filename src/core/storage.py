@@ -14,8 +14,8 @@ def load_accounts(path: Path) -> AccountStore:
         logger.warning(f"accounts file not found: {path}")
         return AccountStore()
 
-    raw = path.read_text(encoding="utf-8-sig").strip()
-    if not raw:
+    raw = path.read_text(encoding="utf-8-sig")
+    if not raw.strip():
         logger.warning(f"accounts file is empty: {path}")
         return AccountStore()
 
