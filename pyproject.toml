@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-pgtool = "src.cli:app"
+pgtool = "src.cli:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
