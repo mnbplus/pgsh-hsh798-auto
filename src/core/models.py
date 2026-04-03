@@ -12,7 +12,16 @@ class StrippingModel(BaseModel):
         return value
 
 
-class PgshAccountEntry(StrippingModel):
+class NonBlankDefaultsModel(StrippingModel):
+    @field_validator("phone_brand", mode="after", check_fields=False)
+    @classmethod
+    def _normalize_phone_brand(cls, value: object) -> object:
+        if isinstance(value, str) and not value:
+            return "Xiaomi"
+        return value
+
+
+class PgshAccountEntry(NonBlankDefaultsModel):
     phone: str = ""
     token: str = ""
     phone_brand: str = "Xiaomi"
