@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from src.adapters.hsh798.client import Hsh798Client
+from src.core.output_sanitizer import sanitize_output_bundle
 from src.core.storage import load_accounts, upsert_hsh798_account, write_snapshot_bundle
 
 
@@ -60,7 +61,12 @@ def run_hsh798_login(
     return result
 
 
-def run_hsh798_snapshot(accounts_file: str = "configs/accounts.json", output_dir: str = "outputs") -> Path:
+def run_hsh798_snapshot(
+    accounts_file: str = "configs/accounts.json",
+    output_dir: str = "outputs",
+    *,
+    debug_raw: bool = False,
+) -> Path:
     store = load_accounts(Path(accounts_file))
     rows = []
     for index, item in enumerate(store.hsh798):
@@ -85,4 +91,5 @@ def run_hsh798_snapshot(accounts_file: str = "configs/accounts.json", output_dir
                 row["devices_error"] = str(e)
         rows.append(row)
 
+    rows = sanitize_output_bundle(rows, debug_raw=debug_raw)
     return write_snapshot_bundle(output_dir, "hsh798_snapshot", rows)

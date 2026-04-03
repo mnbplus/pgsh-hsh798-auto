@@ -1,24 +1,27 @@
+from functools import lru_cache
 from urllib.parse import urlparse
 import hashlib
 import time
 from typing import Any
 
 import httpx
+from src.core.models import AppSettings
 
-APP_VERSION = "1.82.1"
-APP_SECRET = "nFU9pbG8YQoAe1kFh+E7eyrdlSLglwEJeA0wwHB1j5o="
-ALIPAY_APP_SECRET = "Ew+ZSuppXZoA9YzBHgHmRvzt0Bw1CpwlQQtSl49QNhY="
-AUTH_APP_VERSION = "1.57.0"
-AUTH_APP_SECRET = "xl8v4s/5qpBLvN+8CzFx7vVjy31NgXXcedU7G0QpOMM="
 DEFAULT_USER_AGENT = "okhttp/4.12.0"
 AUTH_USER_AGENT = "okhttp/3.14.9"
 RETRYABLE_HTTP_STATUS = {408, 425, 429, 500, 502, 503, 504}
+
+
+@lru_cache
+def _load_app_settings() -> AppSettings:
+    return AppSettings()
 
 
 class PgshClient:
     def __init__(self, token: str, phone_brand: str):
         self.token = token
         self.phone_brand = phone_brand
+        self.settings = _load_app_settings()
         self.client = httpx.Client(base_url="https://userapi.qiekj.com", timeout=20.0)
         self._session_warmed = False
 
@@ -44,14 +47,14 @@ class PgshClient:
         path = urlparse(str(request_url)).path
         token_value = self.token if token is None else token
         if channel == "android_app":
-            version_value = APP_VERSION if app_version is None else app_version
-            secret_value = APP_SECRET if app_secret is None else app_secret
+            version_value = self.settings.pgsh_app_version if app_version is None else app_version
+            secret_value = self.settings.pgsh_app_secret if app_secret is None else app_secret
             raw = (
                 f"appSecret={secret_value}&channel={channel}&timestamp={timestamp}"
                 f"&token={token_value}&version={version_value}&{path}"
             )
         else:
-            secret_value = ALIPAY_APP_SECRET if app_secret is None else app_secret
+            secret_value = self.settings.pgsh_alipay_app_secret if app_secret is None else app_secret
             raw = f"appSecret={secret_value}&channel={channel}&timestamp={timestamp}&token={token_value}&{path}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -85,7 +88,7 @@ class PgshClient:
             ),
         }
         if channel == "android_app":
-            headers["Version"] = APP_VERSION if app_version is None else app_version
+            headers["Version"] = self.settings.pgsh_app_version if app_version is None else app_version
             if brand_value:
                 headers["phoneBrand"] = brand_value
         return headers
@@ -234,8 +237,8 @@ class PgshClient:
             path,
             data={"phone": phone, "template": "reg"},
             token="",
-            app_version=AUTH_APP_VERSION,
-            app_secret=AUTH_APP_SECRET,
+            app_version=self.settings.pgsh_auth_app_version,
+            app_secret=self.settings.pgsh_auth_app_secret,
             user_agent=AUTH_USER_AGENT,
         )
 
@@ -246,8 +249,8 @@ class PgshClient:
             path,
             data={"channel": "h5", "phone": phone, "verify": verify_code},
             token="",
-            app_version=AUTH_APP_VERSION,
-            app_secret=AUTH_APP_SECRET,
+            app_version=self.settings.pgsh_auth_app_version,
+            app_secret=self.settings.pgsh_auth_app_secret,
             user_agent=AUTH_USER_AGENT,
         )
 

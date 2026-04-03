@@ -7,6 +7,7 @@ import time
 
 from src.adapters.pgsh.client import PgshClient
 from src.core.models import PgshAccountEntry
+from src.core.output_sanitizer import sanitize_output_bundle
 from src.core.storage import load_accounts, upsert_pgsh_account, write_json, write_snapshot_bundle
 
 
@@ -1314,6 +1315,7 @@ def run_pgsh_snapshot(
     *,
     selected_account: PgshAccountEntry | None = None,
     selected_account_index: int | None = None,
+    debug_raw: bool = False,
 ) -> dict:
     channels = normalize_channels(channel_mode)
     configured_accounts, token_ready_accounts, targets = _collect_target_accounts(
@@ -1353,6 +1355,8 @@ def run_pgsh_snapshot(
         ),
         "rows": rows,
     }
+    bundle["meta"]["raw_mode"] = "debug" if debug_raw else "redacted"
+    bundle = sanitize_output_bundle(bundle, debug_raw=debug_raw)
     stamped_file = write_snapshot_bundle(output_dir, "pgsh_snapshot", bundle)
     return {
         "command": "pgsh-snapshot",
@@ -1378,6 +1382,7 @@ def run_pgsh_execute(
     skip_checkin: bool = False,
     include_rows: bool = False,
     task_profiles_by_channel: dict[str, dict[str, dict]] | None = None,
+    debug_raw: bool = False,
 ) -> dict:
     channels = normalize_channels(channel_mode)
     whitelist = load_task_whitelist(whitelist_file)
@@ -1438,6 +1443,8 @@ def run_pgsh_execute(
         ),
         "rows": rows,
     }
+    bundle["meta"]["raw_mode"] = "debug" if debug_raw else "redacted"
+    bundle = sanitize_output_bundle(bundle, debug_raw=debug_raw)
     stamped_file = write_snapshot_bundle(output_dir, "pgsh_execute", bundle)
     result = {
         "command": "pgsh-execute",
@@ -1467,6 +1474,7 @@ def run_pgsh_probe(
     merge_export: bool = True,
     include_rows: bool = False,
     task_profiles_by_channel: dict[str, dict[str, dict]] | None = None,
+    debug_raw: bool = False,
 ) -> dict:
     channels = normalize_channels(channel_mode)
     whitelist = load_task_whitelist(whitelist_file) if whitelist_file else None
@@ -1527,6 +1535,8 @@ def run_pgsh_probe(
         ),
         "rows": rows,
     }
+    bundle["meta"]["raw_mode"] = "debug" if debug_raw else "redacted"
+    bundle = sanitize_output_bundle(bundle, debug_raw=debug_raw)
     stamped_file = write_snapshot_bundle(output_dir, "pgsh_probe", bundle)
 
     export_file = None
@@ -1592,6 +1602,7 @@ def run_pgsh_daily(
     block_cooldown_seconds: float = DEFAULT_DAILY_BLOCK_COOLDOWN_SECONDS,
     state_file: str = DEFAULT_DAILY_STATE_FILE,
     respect_cooldown: bool = True,
+    debug_raw: bool = False,
 ) -> dict:
     channels = normalize_channels(channel_mode)
     selected_mode = _selection_mode(selected_account, selected_account_index)
@@ -1670,6 +1681,7 @@ def run_pgsh_daily(
             merge_export=True,
             include_rows=True,
             task_profiles_by_channel=task_profiles_by_channel,
+            debug_raw=debug_raw,
         )
         _update_runtime_state_from_probe(
             account_state,
@@ -1721,6 +1733,7 @@ def run_pgsh_daily(
             skip_checkin=True,
             include_rows=True,
             task_profiles_by_channel=task_profiles_by_channel,
+            debug_raw=debug_raw,
         )
         execute_rounds.append(execute_result)
         current_now = datetime.now(timezone.utc).astimezone()
@@ -1831,6 +1844,8 @@ def run_pgsh_daily(
         "runtime_state": runtime_state.get("accounts", {}).get(account_state_key),
         "errors": errors,
     }
+    bundle["meta"]["raw_mode"] = "debug" if debug_raw else "redacted"
+    bundle = sanitize_output_bundle(bundle, debug_raw=debug_raw)
     files = {
         "stamped": None,
         "latest": str(Path(output_dir) / "pgsh_daily_latest.json"),
