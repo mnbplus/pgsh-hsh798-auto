@@ -19,6 +19,7 @@ This repo's CLI was tightened on 2026-04-02 to match the examples and the new pe
 - PGSH batch outputs are now returned as `meta` + `summary` + `rows`.
 - Bundle-producing commands now default to redacted raw payloads. Use `--debug-raw` only when you explicitly need full raw API responses in output files.
 - PGSH signing values can now be overridden through environment variables such as `PGHSH_PGSH_APP_VERSION`, `PGHSH_PGSH_APP_SECRET`, `PGHSH_PGSH_ALIPAY_APP_SECRET`, `PGHSH_PGSH_AUTH_APP_VERSION`, and `PGHSH_PGSH_AUTH_APP_SECRET`.
+- `hsh798-snapshot` can now enrich snapshots with per-device status checks, and `hsh798-safe-start` / `hsh798-safe-stop` provide state-aware control wrappers.
 
 ## Examples
 
@@ -39,4 +40,7 @@ python -m src.cli pgsh-daily --account-index 0 --channel alipay --no-refresh-whi
 python -m src.cli hsh798-login --phone <PHONE> --sms-code <SMS_CODE> --save --account-index 0
 python -m src.cli hsh798-devices --account-index 0
 python -m src.cli hsh798-status --account-index 0 --device-id <DEVICE_ID>
+python -m src.cli hsh798-safe-start --account-index 0 --device-id <DEVICE_ID>
+python -m src.cli hsh798-safe-stop --account-index 0 --device-id <DEVICE_ID>
+python -m src.cli hsh798-snapshot --accounts configs/accounts.json --output-dir outputs --include-status
 ```

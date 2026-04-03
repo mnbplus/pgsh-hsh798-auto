@@ -5,7 +5,7 @@ import typer
 from loguru import logger
 
 from src.adapters.hsh798.client import Hsh798Client
-from src.adapters.hsh798.runner import run_hsh798_login, run_hsh798_snapshot
+from src.adapters.hsh798.runner import run_hsh798_login, run_hsh798_safe_action, run_hsh798_snapshot
 from src.adapters.pgsh.client import PgshClient
 from src.adapters.pgsh.runner import (
     DEFAULT_DAILY_BLOCK_COOLDOWN_SECONDS,
@@ -527,10 +527,58 @@ def hsh798_stop(
 def hsh798_snapshot(
     accounts: str = typer.Option("configs/accounts.json", "--accounts", help="Account store JSON file."),
     output_dir: str = typer.Option("outputs", "--output-dir", help="Directory for snapshot files."),
+    include_status: bool = typer.Option(True, "--include-status/--skip-status", help="Also fetch per-device status for favorited devices."),
     debug_raw: bool = typer.Option(False, "--debug-raw/--redact-raw", help="Include full raw API payloads in output files."),
 ):
-    out = run_hsh798_snapshot(accounts_file=accounts, output_dir=output_dir, debug_raw=debug_raw)
+    out = run_hsh798_snapshot(
+        accounts_file=accounts,
+        output_dir=output_dir,
+        include_status=include_status,
+        debug_raw=debug_raw,
+    )
     echo_json({"command": "hsh798-snapshot", "output": str(out)})
+
+
+@app.command(name="hsh798-safe-start")
+def hsh798_safe_start(
+    device_id: str = typer.Option(..., "--device-id", help="Device ID."),
+    token: str | None = typer.Option(None, "--token", help="HSH798 token."),
+    account_index: int | None = typer.Option(None, "--account-index", help="Use token from configs/accounts.json."),
+    accounts: str = typer.Option("configs/accounts.json", "--accounts", help="Account store JSON file."),
+    verify_after: bool = typer.Option(True, "--verify-after/--no-verify-after", help="Check device status again after sending the action."),
+    force: bool = typer.Option(False, "--force", help="Execute even when the device state is unknown or not idle."),
+):
+    account = resolve_hsh798_account(token=token, accounts_file=Path(accounts), account_index=account_index)
+    echo_json(
+        run_hsh798_safe_action(
+            token=account.token,
+            device_id=device_id,
+            action="start",
+            verify_after=verify_after,
+            force=force,
+        )
+    )
+
+
+@app.command(name="hsh798-safe-stop")
+def hsh798_safe_stop(
+    device_id: str = typer.Option(..., "--device-id", help="Device ID."),
+    token: str | None = typer.Option(None, "--token", help="HSH798 token."),
+    account_index: int | None = typer.Option(None, "--account-index", help="Use token from configs/accounts.json."),
+    accounts: str = typer.Option("configs/accounts.json", "--accounts", help="Account store JSON file."),
+    verify_after: bool = typer.Option(True, "--verify-after/--no-verify-after", help="Check device status again after sending the action."),
+    force: bool = typer.Option(False, "--force", help="Execute even when the device already looks idle or status is unavailable."),
+):
+    account = resolve_hsh798_account(token=token, accounts_file=Path(accounts), account_index=account_index)
+    echo_json(
+        run_hsh798_safe_action(
+            token=account.token,
+            device_id=device_id,
+            action="stop",
+            verify_after=verify_after,
+            force=force,
+        )
+    )
 
 
 app.info.help = app.info.help or app.help
