@@ -1,33 +1,54 @@
-# 输出说明
+# Output Guide
 
-## 输出文件
+## Generated files
 
-批量命令会在 `outputs/` 下生成 JSON 文件：
+The CLI writes structured JSON bundles into `outputs/` for batch and daily runs.
+
+Common files:
 
 - `pgsh_snapshot_YYYYMMDD_HHMMSS.json`
 - `pgsh_execute_YYYYMMDD_HHMMSS.json`
-- `hsh798_snapshot_YYYYMMDD_HHMMSS.json`
-- 对应的 `*_latest.json`
-- 对应的 `*_manifest.json`
+- `pgsh_probe_YYYYMMDD_HHMMSS.json`
+- `pgsh_daily_YYYYMMDD_HHMMSS.json`
+- `*_latest.json`
+- `*_manifest.json`
 
-## PGSH 文件结构
+## PGSH bundle shape
 
-`pgsh-snapshot` 和 `pgsh-execute` 现已统一为：
+`pgsh-snapshot`, `pgsh-execute`, and `pgsh-probe` use the same high-level shape:
 
-- `meta`：命令、schema 版本、账号文件、channel、选择模式等元信息
-- `summary`：聚合统计，例如账号数、有效账号数、计划执行次数、dry-run 信息
-- `rows`：逐账号明细，包含原始响应、执行结果、错误列表与 channel 级摘要
+- `meta`: command metadata, selected channels, account source, schema version, and command-specific parameters
+- `summary`: aggregated counts such as valid accounts, planned attempts, successes, failures, and block signals
+- `rows`: per-account detailed results including raw API responses and execution details
 
-## 设计目标
+## Daily contract
 
-- 每次执行保留独立快照
-- 便于比较 token 是否失效
-- 便于后续做任务结果审计
-- 便于排查接口字段变化
-- 让空账号、失效 token、API 返回失败时也保留稳定结构
+`pgsh-daily` writes `outputs/pgsh_daily_latest.json`.
 
-## 后续准备补充
+This is the preferred machine-readable contract for OpenClaw or any robot runner.
 
-- 错误分类
-- 任务执行结果汇总
-- 余额变化字段提炼
+Read these fields first:
+
+- `automation_summary`: short decision payload with status, recommended action, suggested retry time, and file locations
+- `next_run`: retry guidance derived from the latest cooldown state
+- `summary`: human-readable aggregated daily result
+- `runtime_state`: persisted account state snapshot after the run
+
+## Recommended robot fields
+
+For scheduling and status checks, prefer:
+
+- `automation_summary.status`
+- `automation_summary.recommended_action`
+- `automation_summary.suggested_not_before`
+- `summary.execute_successful_attempts`
+- `summary.execute_failed_attempts`
+- `summary.execute_blocked_rounds`
+- `summary.deferred_channels`
+
+## Design goals
+
+- Keep every run auditable with timestamped snapshots
+- Preserve a stable `*_latest.json` path for automations
+- Store enough context to compare token validity and channel health over time
+- Expose cooldown and retry state without requiring the caller to parse low-level task details

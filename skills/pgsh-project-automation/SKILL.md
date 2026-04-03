@@ -46,6 +46,7 @@ After each run, inspect:
 
 Read these fields first:
 
+- `automation_summary`
 - `summary.execute_successful_attempts`
 - `summary.execute_failed_attempts`
 - `summary.execute_blocked_rounds`
@@ -56,6 +57,8 @@ Read these fields first:
 If `next_run.reason` is `channel_cooldown`, do not run again before `next_run.suggested_not_before`.
 
 If `summary.execute_successful_attempts` is positive and no cooldown is active, it is acceptable to schedule another run later.
+
+For robot orchestration, prefer `automation_summary` as the short contract and fall back to `summary`, `next_run`, and `runtime_state` only when more detail is needed.
 
 ## Account onboarding
 

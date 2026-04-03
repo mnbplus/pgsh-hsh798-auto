@@ -44,6 +44,14 @@ class AccountStore(BaseModel):
     hsh798: list[Hsh798AccountEntry] = Field(default_factory=list)
 
 
+class SnapshotManifest(BaseModel):
+    prefix: str
+    generated_at: str
+    latest_file: str
+    stamped_file: str
+    rows: int | None = None
+
+
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="PGHSH_", extra="ignore")
     accounts_file: Path = Path("configs/accounts.json")

@@ -973,6 +973,52 @@ def _suggest_next_daily_run_time(deferred_channels: list[dict], now: datetime) -
     }
 
 
+def _build_automation_summary(
+    *,
+    account_index: int | None,
+    channels: tuple[str, ...],
+    confirmed_whitelist_file: str,
+    state_file: str,
+    daily_files: dict | None,
+    daily_summary: dict,
+    next_run: dict,
+) -> dict:
+    deferred_channels = daily_summary.get("deferred_channels") or []
+    execute_blocked_rounds = int(daily_summary.get("execute_blocked_rounds") or 0)
+    execute_successful_attempts = int(daily_summary.get("execute_successful_attempts") or 0)
+
+    if deferred_channels:
+        status = "cooldown"
+        recommended_action = "wait_until_suggested_not_before"
+    elif execute_successful_attempts > 0:
+        status = "progressed"
+        recommended_action = "run_again_later"
+    elif execute_blocked_rounds > 0:
+        status = "blocked"
+        recommended_action = "wait_and_retry"
+    else:
+        status = "idle"
+        recommended_action = "inspect_probe_or_whitelist"
+
+    return {
+        "status": status,
+        "recommended_action": recommended_action,
+        "account_index": account_index,
+        "channels": list(channels),
+        "confirmed_whitelist_file": confirmed_whitelist_file,
+        "state_file": state_file,
+        "daily_latest_file": None if not daily_files else daily_files.get("latest"),
+        "daily_manifest_file": None if not daily_files else daily_files.get("manifest"),
+        "checkin_success": bool(daily_summary.get("checkin_success")),
+        "execute_successful_attempts": execute_successful_attempts,
+        "execute_failed_attempts": int(daily_summary.get("execute_failed_attempts") or 0),
+        "execute_blocked_rounds": execute_blocked_rounds,
+        "deferred_channels": deferred_channels,
+        "suggested_not_before": next_run.get("suggested_not_before"),
+        "wait_seconds": next_run.get("wait_seconds"),
+    }
+
+
 def _record_channel_attempts(channel_state: dict, *, attempts_payload: list[dict], now_iso: str) -> None:
     task_stats = channel_state.setdefault("task_stats", {})
     for item in attempts_payload:
@@ -1657,10 +1703,32 @@ def run_pgsh_daily(
         "runtime_state": runtime_state.get("accounts", {}).get(account_state_key),
         "errors": errors,
     }
+    files = {
+        "stamped": None,
+        "latest": str(Path(output_dir) / "pgsh_daily_latest.json"),
+        "manifest": str(Path(output_dir) / "pgsh_daily_manifest.json"),
+    }
+    automation_summary = _build_automation_summary(
+        account_index=selected_account_index,
+        channels=channels,
+        confirmed_whitelist_file=confirmed_whitelist_file,
+        state_file=state_file,
+        daily_files=files,
+        daily_summary=daily_summary,
+        next_run=next_run,
+    )
+    bundle["automation_summary"] = automation_summary
     stamped_file = write_snapshot_bundle(output_dir, "pgsh_daily", bundle)
+    files = _output_files(output_dir, "pgsh_daily", stamped_file)
+    automation_summary["daily_latest_file"] = files.get("latest")
+    automation_summary["daily_manifest_file"] = files.get("manifest")
+    automation_summary["daily_stamped_file"] = files.get("stamped")
+    write_json(Path(files["stamped"]), bundle)
+    write_json(Path(files["latest"]), bundle)
 
     return {
         "command": "pgsh-daily",
-        "files": _output_files(output_dir, "pgsh_daily", stamped_file),
+        "files": files,
+        "automation_summary": automation_summary,
         **bundle,
     }

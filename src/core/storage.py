@@ -67,11 +67,16 @@ def write_snapshot_bundle(output_dir: str | Path, prefix: str, data: Any) -> Pat
 
     Returns the timestamped snapshot path so callers can keep a stable audit trail
     while still reading the companion `<prefix>_latest.json` file for the newest view.
+    Prefixes are normalized to a filesystem-safe slug so callers can pass labels with
+    spaces or punctuation without accidentally producing awkward file names.
     """
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    safe_prefix = prefix.strip().replace(" ", "_")
+    safe_prefix = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in prefix.strip())
+    while "__" in safe_prefix:
+        safe_prefix = safe_prefix.replace("__", "_")
+    safe_prefix = safe_prefix.strip("_")
     if not safe_prefix:
         raise ValueError("prefix must not be blank")
 
