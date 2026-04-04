@@ -258,6 +258,15 @@ class PgshClient:
         path = "/task/list"
         return self._request_json("POST", path, channel=channel, data={"token": self.token})
 
+    def task_by_type(self, task_code: str, channel: str = "android_app") -> dict:
+        path = "/task/queryByType"
+        return self._request_json(
+            "POST",
+            path,
+            channel=channel,
+            data={"taskCode": task_code, "token": self.token},
+        )
+
     def checkin(self) -> dict:
         path = "/signin/doUserSignIn"
         return self._request_json("POST", path, data={"activityId": "600001", "token": self.token})

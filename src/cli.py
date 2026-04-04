@@ -9,7 +9,12 @@ from src.adapters.hsh798.runner import run_hsh798_login, run_hsh798_safe_action,
 from src.adapters.pgsh.client import PgshClient
 from src.adapters.pgsh.runner import (
     DEFAULT_DAILY_BLOCK_COOLDOWN_SECONDS,
+    DEFAULT_DAILY_NO_CREDIT_BACKOFF_SECONDS,
     DEFAULT_DAILY_STATE_FILE,
+    DEFAULT_EXECUTE_BATCH_BREAK_JITTER_SECONDS,
+    DEFAULT_EXECUTE_BATCH_BREAK_SECONDS,
+    DEFAULT_EXECUTE_BATCH_MAX_ATTEMPTS,
+    DEFAULT_EXECUTE_BATCH_MIN_ATTEMPTS,
     DEFAULT_EXECUTE_DELAY_JITTER_SECONDS,
     DEFAULT_EXECUTE_DELAY_SECONDS,
     DEFAULT_EXECUTE_MAX_ATTEMPTS_PER_TASK,
@@ -174,9 +179,9 @@ def pgsh_checkin(
         echo_json(client.checkin())
 
 
-@app.command(name="pgsh-complete")
-def pgsh_complete(
-    task_code: str = typer.Option(..., "--task-code", help="PGSH task code."),
+@app.command(name="pgsh-task-probe")
+def pgsh_task_probe(
+    task_code: list[str] = typer.Option(..., "--task-code", help="Task code(s) to inspect. Repeat the flag for multiple codes."),
     token: str | None = typer.Option(None, "--token", help="PGSH token."),
     account_index: int | None = typer.Option(None, "--account-index", help="Use token from configs/accounts.json."),
     accounts: str = typer.Option("configs/accounts.json", "--accounts", help="Account store JSON file."),
@@ -190,7 +195,98 @@ def pgsh_complete(
         account_index=account_index,
     )
     with PgshClient(token=account.token, phone_brand=account.phone_brand) as client:
-        echo_json(client.complete_task(task_code=task_code, channel=channel))
+        task_list_payload = client.task_list(channel=channel)
+        task_map = {
+            str(item.get("taskCode") or "").strip(): item
+            for item in ((task_list_payload.get("data") or {}).get("items") or [])
+            if str(item.get("taskCode") or "").strip()
+        }
+        probes = []
+        for code in task_code:
+            code = str(code).strip()
+            query_payload = client.task_by_type(task_code=code, channel=channel)
+            task_item = task_map.get(code)
+            probes.append(
+                {
+                    "taskCode": code,
+                    "list_item": None
+                    if task_item is None
+                    else {
+                        "title": task_item.get("title"),
+                        "taskType": task_item.get("taskType"),
+                        "type": task_item.get("type"),
+                        "completedStatus": task_item.get("completedStatus"),
+                        "completedFreq": task_item.get("completedFreq"),
+                        "dailyTaskLimit": task_item.get("dailyTaskLimit"),
+                        "jumpLink": task_item.get("jumpLink"),
+                        "awardNumber": task_item.get("awardNumber"),
+                        "awardWay": task_item.get("awardWay"),
+                        "extendMap": task_item.get("extendMap"),
+                        "subtaskList": task_item.get("subtaskList"),
+                    },
+                    "query_by_type": query_payload,
+                    "query_summary": {
+                        "ok": query_payload.get("ok"),
+                        "code": query_payload.get("code"),
+                        "api_code": query_payload.get("api_code"),
+                        "http_status": query_payload.get("http_status"),
+                        "has_data": query_payload.get("data") is not None,
+                        "subtaskList": None
+                        if not isinstance(query_payload.get("data"), dict)
+                        else query_payload.get("data", {}).get("subtaskList"),
+                        "extendMap": None
+                        if not isinstance(query_payload.get("data"), dict)
+                        else query_payload.get("data", {}).get("extendMap"),
+                    },
+                }
+            )
+        echo_json(
+            {
+                "channel": channel,
+                "task_count": len(probes),
+                "task_list_ok": task_list_payload.get("ok"),
+                "probes": probes,
+            }
+        )
+
+
+@app.command(name="pgsh-complete")
+def pgsh_complete(
+    task_code: str = typer.Option(..., "--task-code", help="PGSH task code."),
+    subtask_code: str | None = typer.Option(None, "--subtask-code", help="Optional PGSH subtask code for multi-stage tasks."),
+    token: str | None = typer.Option(None, "--token", help="PGSH token."),
+    account_index: int | None = typer.Option(None, "--account-index", help="Use token from configs/accounts.json."),
+    accounts: str = typer.Option("configs/accounts.json", "--accounts", help="Account store JSON file."),
+    phone_brand: str | None = typer.Option(None, "--phone-brand", help="Override phoneBrand header."),
+    channel: str = typer.Option("android_app", "--channel", help="android_app or alipay."),
+):
+    account = resolve_pgsh_account(
+        token=token,
+        phone_brand=phone_brand,
+        accounts_file=Path(accounts),
+        account_index=account_index,
+    )
+    with PgshClient(token=account.token, phone_brand=account.phone_brand) as client:
+        echo_json(client.complete_task(task_code=task_code, channel=channel, subtask_code=subtask_code))
+
+
+@app.command(name="pgsh-task-by-type")
+def pgsh_task_by_type(
+    task_code: str = typer.Option(..., "--task-code", help="PGSH task code to inspect with /task/queryByType."),
+    token: str | None = typer.Option(None, "--token", help="PGSH token."),
+    account_index: int | None = typer.Option(None, "--account-index", help="Use token from configs/accounts.json."),
+    accounts: str = typer.Option("configs/accounts.json", "--accounts", help="Account store JSON file."),
+    phone_brand: str | None = typer.Option(None, "--phone-brand", help="Override phoneBrand header."),
+    channel: str = typer.Option("android_app", "--channel", help="android_app or alipay."),
+):
+    account = resolve_pgsh_account(
+        token=token,
+        phone_brand=phone_brand,
+        accounts_file=Path(accounts),
+        account_index=account_index,
+    )
+    with PgshClient(token=account.token, phone_brand=account.phone_brand) as client:
+        echo_json(client.task_by_type(task_code=task_code, channel=channel))
 
 
 @app.command(name="pgsh-captcha")
