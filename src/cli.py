@@ -20,6 +20,8 @@ from src.adapters.pgsh.runner import (
     DEFAULT_EXECUTE_MAX_ATTEMPTS_PER_TASK,
     DEFAULT_EXECUTE_MAX_SUCCESSES_PER_CHANNEL,
     DEFAULT_PROBE_DELAY_SECONDS,
+    load_pgsh_runtime_state,
+    normalize_channels,
     run_pgsh_daily,
     run_pgsh_execute,
     run_pgsh_login,
@@ -248,6 +250,104 @@ def pgsh_task_probe(
                 "probes": probes,
             }
         )
+
+
+@app.command(name="pgsh-ad-analysis")
+def pgsh_ad_analysis(
+    account_indexes: list[int] = typer.Option(..., "--account-index", help="Configured PGSH account index to compare. Repeat the flag for multiple accounts."),
+    accounts: str = typer.Option("configs/accounts.json", "--accounts", help="Account store JSON file."),
+    channel: str = typer.Option("android_app", "--channel", help="android_app or alipay."),
+    state_file: str = typer.Option(DEFAULT_DAILY_STATE_FILE, "--state-file", help="Runtime state file for learned task stats."),
+):
+    channels = normalize_channels(channel)
+    if len(channels) != 1:
+        raise typer.BadParameter("pgsh-ad-analysis currently supports exactly one channel")
+    selected_channel = channels[0]
+    runtime_state, _ = load_pgsh_runtime_state(state_file)
+    store = load_accounts(Path(accounts))
+
+    analyses = []
+    for account_index in account_indexes:
+        account = resolve_pgsh_account(
+            token=None,
+            phone_brand=None,
+            accounts_file=Path(accounts),
+            account_index=account_index,
+        )
+        with PgshClient(token=account.token, phone_brand=account.phone_brand) as client:
+            task_list_payload = client.task_list(channel=selected_channel)
+            items = ((task_list_payload.get("data") or {}).get("items") or []) if task_list_payload.get("ok") else []
+
+        account_state = None
+        for candidate in (runtime_state.get("accounts") or {}).values():
+            if isinstance(candidate, dict) and candidate.get("account_index") == account_index:
+                account_state = candidate
+                break
+        task_stats = (((account_state or {}).get("channels") or {}).get(selected_channel) or {}).get("task_stats") or {}
+
+        ad_like_tasks = []
+        for item in items:
+            title = str(item.get("title") or "")
+            short_title = str(item.get("shortTitle") or "")
+            extend_map = item.get("extendMap") or {}
+            if not (
+                "广告" in title
+                or "视频" in title
+                or "广告" in short_title
+                or "视频" in short_title
+                or (isinstance(extend_map, dict) and ("hmV2" in extend_map or "v180" in extend_map or "benefitTaskExt" in extend_map))
+            ):
+                continue
+
+            task_code = str(item.get("taskCode") or "").strip()
+            stats = (task_stats.get(task_code) or {}) if isinstance(task_stats, dict) else {}
+            ad_like_tasks.append(
+                {
+                    "taskCode": task_code,
+                    "title": item.get("title"),
+                    "shortTitle": item.get("shortTitle"),
+                    "taskType": item.get("taskType"),
+                    "type": item.get("type"),
+                    "completedStatus": item.get("completedStatus"),
+                    "completedFreq": item.get("completedFreq"),
+                    "dailyTaskLimit": item.get("dailyTaskLimit"),
+                    "awardNumber": item.get("awardNumber"),
+                    "awardWay": item.get("awardWay"),
+                    "jumpLink": item.get("jumpLink"),
+                    "extendMap": extend_map,
+                    "subtaskList": item.get("subtaskList"),
+                    "learning": {
+                        "successes": stats.get("successes", 0),
+                        "failures": stats.get("failures", 0),
+                        "no_credit": stats.get("no_credit", 0),
+                        "last_http_status": stats.get("last_http_status"),
+                        "last_api_code": stats.get("last_api_code"),
+                        "last_outcome": stats.get("last_outcome"),
+                        "last_success_at": stats.get("last_success_at"),
+                        "last_failure_at": stats.get("last_failure_at"),
+                    },
+                }
+            )
+
+        analyses.append(
+            {
+                "account_index": account_index,
+                "phone_brand": account.phone_brand,
+                "task_list_ok": task_list_payload.get("ok"),
+                "task_count": len(items),
+                "ad_like_task_count": len(ad_like_tasks),
+                "tasks": ad_like_tasks,
+            }
+        )
+
+    echo_json(
+        {
+            "channel": selected_channel,
+            "state_file": state_file,
+            "accounts_file": accounts,
+            "accounts": analyses,
+        }
+    )
 
 
 @app.command(name="pgsh-complete")
