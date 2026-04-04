@@ -15,8 +15,10 @@ This repo's CLI was tightened on 2026-04-02 to match the examples and the new pe
 - `pgsh-probe` can now low-frequency probe pending task codes and optionally export a refreshed whitelist JSON file.
 - `pgsh-probe --export-confirmed-whitelist` can merge newly confirmed task codes back into `configs/pgsh_task_whitelist_confirmed.json`.
 - `pgsh-execute` now supports `--delay-seconds` so successful attempts can be throttled more gently.
-- `pgsh-daily` now writes a machine-friendly daily bundle, tracks cooldown state, and can suggest when the next safe run should happen.
+- `pgsh-daily` now writes a machine-friendly daily bundle, tracks cooldown state, can suggest when the next safe run should happen, and auto-triggers a low-frequency probe after zero-progress runs.
 - PGSH batch outputs are now returned as `meta` + `summary` + `rows`.
+- PGSH execution/probe summaries now distinguish `no_credit_attempts` from transport/API failures so automation can reason about "接口通了但没拿到积分" separately.
+- `pgsh-daily` no longer suggests an immediate rerun when a zero-progress execution auto-triggers a stall probe and the probe still only returns `no_credit`.
 - Bundle-producing commands now default to redacted raw payloads. Use `--debug-raw` only when you explicitly need full raw API responses in output files.
 - PGSH signing values can now be overridden through environment variables such as `PGHSH_PGSH_APP_VERSION`, `PGHSH_PGSH_APP_SECRET`, `PGHSH_PGSH_ALIPAY_APP_SECRET`, `PGHSH_PGSH_AUTH_APP_VERSION`, and `PGHSH_PGSH_AUTH_APP_SECRET`.
 - `hsh798-snapshot` can now enrich snapshots with per-device status checks, and `hsh798-safe-start` / `hsh798-safe-stop` provide state-aware control wrappers.

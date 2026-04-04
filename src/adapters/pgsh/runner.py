@@ -14,6 +14,16 @@ from src.core.storage import load_accounts, upsert_pgsh_account, write_json, wri
 VALID_CHANNELS = ("android_app", "alipay")
 BLOCKLIKE_HTTP_STATUS = {401, 403, 429}
 SCHEMA_VERSION = 1
+
+
+def _response_indicates_block(response: dict) -> bool:
+    http_status = _to_int(response.get("http_status"))
+    if http_status in BLOCKLIKE_HTTP_STATUS:
+        return True
+    api_code = _to_int(response.get("api_code"))
+    return api_code in BLOCKLIKE_HTTP_STATUS
+
+
 DEFAULT_EXECUTE_DELAY_SECONDS = 6.0
 DEFAULT_EXECUTE_DELAY_JITTER_SECONDS = 3.0
 DEFAULT_EXECUTE_MAX_ATTEMPTS_PER_TASK = 3
@@ -167,24 +177,29 @@ def _task_learning_snapshot(task_profiles: dict[str, dict] | None, task_code: st
     profile = (task_profiles or {}).get(task_code) or {}
     successes = max(_to_int(profile.get("successes")) or 0, 0)
     failures = max(_to_int(profile.get("failures")) or 0, 0)
+    no_credit = max(_to_int(profile.get("no_credit")) or 0, 0)
     return {
         "successes": successes,
         "failures": failures,
+        "no_credit": no_credit,
         "last_success_at": profile.get("last_success_at"),
         "last_failure_at": profile.get("last_failure_at"),
         "last_http_status": _to_int(profile.get("last_http_status")),
+        "last_api_code": _to_int(profile.get("last_api_code")),
+        "last_outcome": profile.get("last_outcome"),
     }
 
 
 def _execute_task_priority(task_meta: dict, task_profiles: dict[str, dict] | None) -> tuple:
     learning = _task_learning_snapshot(task_profiles, task_meta["taskCode"])
-    total = learning["successes"] + learning["failures"]
+    total = learning["successes"] + learning["failures"] + learning["no_credit"]
     success_rate = learning["successes"] / total if total else 0.0
     blocked_penalty = 1 if learning["last_http_status"] in BLOCKLIKE_HTTP_STATUS else 0
     unseen_penalty = 1 if learning["successes"] <= 0 else 0
     return (
         blocked_penalty,
         unseen_penalty,
+        learning["no_credit"],
         -success_rate,
         learning["failures"],
         -learning["successes"],
@@ -199,6 +214,7 @@ def _probe_task_priority(task_meta: dict, task_profiles: dict[str, dict] | None)
     return (
         blocked_penalty,
         learning["failures"] > 0,
+        learning["no_credit"],
         learning["failures"],
         0 if learning["successes"] > 0 else 1,
         -int(task_meta.get("attemptsRemaining") or 0),
@@ -210,6 +226,16 @@ def _api_ok(payload: dict) -> bool:
     if not isinstance(payload, dict):
         return False
     return PgshClient.response_ok(payload)
+
+
+def _task_attempt_outcome(response: dict | None) -> str:
+    if not isinstance(response, dict):
+        return "error"
+    if not PgshClient.response_ok(response):
+        return "blocked" if _response_indicates_block(response) else "api_error"
+    if response.get("data") is True:
+        return "success"
+    return "no_credit"
 
 
 def _capture_step(row: dict, key: str, fn):
@@ -270,6 +296,7 @@ def _execute_channel(
         "planned_attempts": 0,
         "successful_attempts": 0,
         "failed_attempts": 0,
+        "no_credit_attempts": 0,
         "dry_run_attempts": 0,
         "blocked": False,
         "blocked_reason": None,
@@ -342,24 +369,37 @@ def _execute_channel(
             progressed = True
             try:
                 response = client.complete_task(task_code=code, channel=channel)
-                success = PgshClient.response_ok(response) and response.get("data") is True
-                action["attempts"].append({"attempt": attempt_no, "success": success, "response": response})
+                outcome = _task_attempt_outcome(response)
+                success = outcome == "success"
+                action["attempts"].append(
+                    {"attempt": attempt_no, "success": success, "outcome": outcome, "response": response}
+                )
                 if success:
                     result["successful_attempts"] += 1
                     remaining_attempts[code] -= 1
                     _sleep_with_jitter(delay_seconds, delay_jitter_seconds)
                     continue
 
-                if response.get("http_status"):
+                if outcome == "blocked":
+                    blocked_http_status = _to_int(response.get("http_status"))
+                    blocked_api_code = _to_int(response.get("api_code"))
                     result["blocked"] = True
-                    result["blocked_reason"] = f"http_status={response['http_status']}"
-                result["failed_attempts"] += 1
+                    result["blocked_reason"] = (
+                        f"http_status={blocked_http_status}"
+                        if blocked_http_status in BLOCKLIKE_HTTP_STATUS
+                        else f"api_code={blocked_api_code}"
+                    )
+                    result["failed_attempts"] += 1
+                elif outcome == "no_credit":
+                    result["no_credit_attempts"] += 1
+                else:
+                    result["failed_attempts"] += 1
                 disabled_tasks.add(code)
                 remaining_attempts[code] = 0
                 if result["blocked"]:
                     break
             except Exception as exc:
-                action["attempts"].append({"attempt": attempt_no, "success": False, "error": str(exc)})
+                action["attempts"].append({"attempt": attempt_no, "success": False, "outcome": "exception", "error": str(exc)})
                 result["failed_attempts"] += 1
                 disabled_tasks.add(code)
                 remaining_attempts[code] = 0
@@ -398,6 +438,7 @@ def _probe_channel(
         "planned_attempts": 0,
         "successful_attempts": 0,
         "failed_attempts": 0,
+        "no_credit_attempts": 0,
         "confirmed_task_codes": [],
         "blocked": False,
         "blocked_reason": None,
@@ -436,7 +477,7 @@ def _probe_channel(
             result["skipped"].append({**task_meta, "reason": "channel_blocked"})
             break
 
-        attempts_planned = min(task_meta["attemptsRemaining"], max_attempts_per_task)
+        attempts_planned = max(1, min(task_meta["attemptsRemaining"], max_attempts_per_task))
         probe = {
             **task_meta,
             "attempts_planned": attempts_planned,
@@ -448,8 +489,9 @@ def _probe_channel(
 
         for attempt in range(1, attempts_planned + 1):
             response = client.complete_task(task_code=task_meta["taskCode"], channel=channel)
-            success = PgshClient.response_ok(response) and response.get("data") is True
-            probe["attempts"].append({"attempt": attempt, "success": success, "response": response})
+            outcome = _task_attempt_outcome(response)
+            success = outcome == "success"
+            probe["attempts"].append({"attempt": attempt, "success": success, "outcome": outcome, "response": response})
             if success:
                 result["successful_attempts"] += 1
                 if task_meta["taskCode"] not in result["confirmed_task_codes"]:
@@ -458,10 +500,20 @@ def _probe_channel(
                     time.sleep(delay_seconds)
                 continue
 
-            if response.get("http_status"):
+            if outcome == "blocked":
+                blocked_http_status = _to_int(response.get("http_status"))
+                blocked_api_code = _to_int(response.get("api_code"))
                 result["blocked"] = True
-                result["blocked_reason"] = f"http_status={response['http_status']}"
-            result["failed_attempts"] += 1
+                result["blocked_reason"] = (
+                    f"http_status={blocked_http_status}"
+                    if blocked_http_status in BLOCKLIKE_HTTP_STATUS
+                    else f"api_code={blocked_api_code}"
+                )
+                result["failed_attempts"] += 1
+            elif outcome == "no_credit":
+                result["no_credit_attempts"] += 1
+            else:
+                result["failed_attempts"] += 1
             break
 
         result["probes"].append(probe)
@@ -607,6 +659,7 @@ def _build_execute_row(
         "planned_attempts": 0,
         "successful_attempts": 0,
         "failed_attempts": 0,
+        "no_credit_attempts": 0,
         "dry_run_attempts": 0,
         "checkin_skipped": dry_run or skip_checkin,
         "checkin_success": bool(PgshClient.response_ok(checkin)),
@@ -640,6 +693,7 @@ def _build_execute_row(
             summary["planned_attempts"] += execution["planned_attempts"]
             summary["successful_attempts"] += execution["successful_attempts"]
             summary["failed_attempts"] += execution["failed_attempts"]
+            summary["no_credit_attempts"] += execution.get("no_credit_attempts", 0)
             summary["dry_run_attempts"] += execution["dry_run_attempts"]
             summary["blocked_channels"] += 1 if execution.get("blocked") else 0
         except Exception as exc:
@@ -689,6 +743,7 @@ def _build_probe_row(
         "planned_attempts": 0,
         "successful_attempts": 0,
         "failed_attempts": 0,
+        "no_credit_attempts": 0,
         "blocked_channels": 0,
         "confirmed_task_codes": [],
         "error_count": 0,
@@ -722,6 +777,7 @@ def _build_probe_row(
             summary["planned_attempts"] += probe_data["planned_attempts"]
             summary["successful_attempts"] += probe_data["successful_attempts"]
             summary["failed_attempts"] += probe_data["failed_attempts"]
+            summary["no_credit_attempts"] += probe_data.get("no_credit_attempts", 0)
             summary["blocked_channels"] += 1 if probe_data["blocked"] else 0
             confirmed_task_codes.update(probe_data["confirmed_task_codes"])
         except Exception as exc:
@@ -807,6 +863,7 @@ def _execute_bundle_summary(
         "planned_attempts": sum(row.get("summary", {}).get("planned_attempts", 0) for row in rows),
         "successful_attempts": sum(row.get("summary", {}).get("successful_attempts", 0) for row in rows),
         "failed_attempts": sum(row.get("summary", {}).get("failed_attempts", 0) for row in rows),
+        "no_credit_attempts": sum(row.get("summary", {}).get("no_credit_attempts", 0) for row in rows),
         "dry_run_attempts": sum(row.get("summary", {}).get("dry_run_attempts", 0) for row in rows),
         "whitelist_size": whitelist_size,
         "dry_run": dry_run,
@@ -838,6 +895,7 @@ def _probe_bundle_summary(
         "planned_attempts": sum(row.get("summary", {}).get("planned_attempts", 0) for row in rows),
         "successful_attempts": sum(row.get("summary", {}).get("successful_attempts", 0) for row in rows),
         "failed_attempts": sum(row.get("summary", {}).get("failed_attempts", 0) for row in rows),
+        "no_credit_attempts": sum(row.get("summary", {}).get("no_credit_attempts", 0) for row in rows),
         "blocked_channels": sum(row.get("summary", {}).get("blocked_channels", 0) for row in rows),
         "confirmed_task_codes": sorted(confirmed_task_codes),
         "confirmed_task_count": len(confirmed_task_codes),
@@ -1036,28 +1094,51 @@ def _filter_channels_by_cooldown(channels: tuple[str, ...], account_state: dict,
     return tuple(active), deferred
 
 
-def _suggest_next_daily_run_time(deferred_channels: list[dict], now: datetime) -> dict:
-    if not deferred_channels:
+def _suggest_next_daily_run_time(
+    deferred_channels: list[dict],
+    now: datetime,
+    *,
+    execute_successful_attempts: int = 0,
+    execute_failed_attempts: int = 0,
+    execute_no_credit_attempts: int = 0,
+    execute_blocked_rounds: int = 0,
+    stall_probe_triggered: bool = False,
+) -> dict:
+    if deferred_channels:
+        next_times = [_parse_iso_datetime(item.get("blocked_until")) for item in deferred_channels]
+        next_times = [dt for dt in next_times if dt is not None]
+        if not next_times:
+            return {
+                "should_retry": True,
+                "reason": "cooldown_present_without_timestamp",
+                "suggested_not_before": now.isoformat(timespec="seconds"),
+            }
+        earliest = min(next_times)
         return {
             "should_retry": True,
-            "reason": "no_active_cooldown",
-            "suggested_not_before": now.isoformat(timespec="seconds"),
+            "reason": "channel_cooldown",
+            "suggested_not_before": earliest.isoformat(timespec="seconds"),
+            "wait_seconds": max(int((earliest - now).total_seconds()), 0),
         }
 
-    next_times = [_parse_iso_datetime(item.get("blocked_until")) for item in deferred_channels]
-    next_times = [dt for dt in next_times if dt is not None]
-    if not next_times:
+    if (
+        stall_probe_triggered
+        and execute_successful_attempts <= 0
+        and execute_blocked_rounds <= 0
+        and execute_no_credit_attempts > 0
+        and execute_failed_attempts <= 0
+    ):
         return {
-            "should_retry": True,
-            "reason": "cooldown_present_without_timestamp",
-            "suggested_not_before": now.isoformat(timespec="seconds"),
+            "should_retry": False,
+            "reason": "no_credit_after_stall_probe",
+            "suggested_not_before": None,
+            "wait_seconds": None,
         }
-    earliest = min(next_times)
+
     return {
         "should_retry": True,
-        "reason": "channel_cooldown",
-        "suggested_not_before": earliest.isoformat(timespec="seconds"),
-        "wait_seconds": max(int((earliest - now).total_seconds()), 0),
+        "reason": "no_active_cooldown",
+        "suggested_not_before": now.isoformat(timespec="seconds"),
     }
 
 
@@ -1074,6 +1155,9 @@ def _build_automation_summary(
     deferred_channels = daily_summary.get("deferred_channels") or []
     execute_blocked_rounds = int(daily_summary.get("execute_blocked_rounds") or 0)
     execute_successful_attempts = int(daily_summary.get("execute_successful_attempts") or 0)
+    execute_failed_attempts = int(daily_summary.get("execute_failed_attempts") or 0)
+    execute_no_credit_attempts = int(daily_summary.get("execute_no_credit_attempts") or 0)
+    should_retry = bool(next_run.get("should_retry"))
 
     if deferred_channels:
         status = "cooldown"
@@ -1084,6 +1168,9 @@ def _build_automation_summary(
     elif execute_blocked_rounds > 0:
         status = "blocked"
         recommended_action = "wait_and_retry"
+    elif not should_retry and execute_no_credit_attempts > 0:
+        status = "stalled"
+        recommended_action = "inspect_probe_or_whitelist"
     else:
         status = "idle"
         recommended_action = "inspect_probe_or_whitelist"
@@ -1103,7 +1190,7 @@ def _build_automation_summary(
         "status": status,
         "recommended_action": recommended_action,
         "reason_code": next_run.get("reason"),
-        "should_run_now": not deferred_channels,
+        "should_run_now": bool(should_retry and not deferred_channels),
         "cooldown_active": bool(deferred_channels),
         "account_index": account_index,
         "primary_channel": None if not channels else channels[0],
@@ -1114,8 +1201,10 @@ def _build_automation_summary(
         "daily_manifest_file": None if not daily_files else daily_files.get("manifest"),
         "checkin_success": bool(daily_summary.get("checkin_success")),
         "execute_successful_attempts": execute_successful_attempts,
-        "execute_failed_attempts": int(daily_summary.get("execute_failed_attempts") or 0),
+        "execute_failed_attempts": execute_failed_attempts,
+        "execute_no_credit_attempts": execute_no_credit_attempts,
         "execute_blocked_rounds": execute_blocked_rounds,
+        "stall_probe_triggered": bool(daily_summary.get("stall_probe_triggered")),
         "deferred_channels": deferred_channels,
         "suggested_not_before": next_run.get("suggested_not_before"),
         "wait_seconds": next_run.get("wait_seconds"),
@@ -1129,17 +1218,30 @@ def _record_channel_attempts(channel_state: dict, *, attempts_payload: list[dict
         task_code = str(item.get("taskCode") or "").strip()
         if not task_code:
             continue
-        stats = task_stats.setdefault(task_code, {"successes": 0, "failures": 0})
+        stats = task_stats.setdefault(task_code, {"successes": 0, "failures": 0, "no_credit": 0})
         for attempt in item.get("attempts", []):
+            outcome = attempt.get("outcome")
+            response = attempt.get("response") or {}
+            if response.get("http_status") is not None:
+                stats["last_http_status"] = response["http_status"]
+            if response.get("api_code") is not None:
+                stats["last_api_code"] = response["api_code"]
+
             if attempt.get("success"):
                 stats["successes"] = int(stats.get("successes", 0)) + 1
                 stats["last_success_at"] = now_iso
-            else:
-                stats["failures"] = int(stats.get("failures", 0)) + 1
+                stats["last_outcome"] = "success"
+                continue
+
+            if outcome == "no_credit":
+                stats["no_credit"] = int(stats.get("no_credit", 0)) + 1
                 stats["last_failure_at"] = now_iso
-                response = attempt.get("response") or {}
-                if response.get("http_status") is not None:
-                    stats["last_http_status"] = response["http_status"]
+                stats["last_outcome"] = "no_credit"
+                continue
+
+            stats["failures"] = int(stats.get("failures", 0)) + 1
+            stats["last_failure_at"] = now_iso
+            stats["last_outcome"] = outcome or "failure"
 
 
 def _update_runtime_state_from_probe(
@@ -1664,6 +1766,7 @@ def run_pgsh_daily(
             errors.append({"step": "captcha_after", "error": str(exc)})
 
     probe_result = None
+    stall_probe_triggered = False
     if refresh_whitelist and active_channels:
         probe_result = run_pgsh_probe(
             accounts_file=accounts_file,
@@ -1760,14 +1863,56 @@ def run_pgsh_daily(
         "rounds": len(execute_rounds),
         "successful_attempts": sum(item["summary"].get("successful_attempts", 0) for item in execute_rounds),
         "failed_attempts": sum(item["summary"].get("failed_attempts", 0) for item in execute_rounds),
+        "no_credit_attempts": sum(item["summary"].get("no_credit_attempts", 0) for item in execute_rounds),
         "blocked_rounds": sum(1 for item in execute_rounds if _execute_result_blocked(item)),
         "final_whitelist_size": execute_result["summary"].get("whitelist_size"),
         "final_dry_run": execute_result["summary"].get("dry_run"),
     }
 
+    if (
+        not refresh_whitelist
+        and active_channels
+        and execute_aggregate["successful_attempts"] <= 0
+        and execute_aggregate["blocked_rounds"] <= 0
+    ):
+        stall_probe_triggered = True
+        probe_result = run_pgsh_probe(
+            accounts_file=accounts_file,
+            output_dir=output_dir,
+            channel_mode=_channel_mode_from_channels(active_channels),
+            selected_account=selected_account,
+            selected_account_index=selected_account_index,
+            whitelist_file=None,
+            delay_seconds=probe_delay_seconds,
+            max_attempts_per_task=probe_max_attempts_per_task,
+            max_tasks=probe_max_tasks if probe_max_tasks is not None else 3,
+            pending_only=True,
+            stop_on_blocked=stop_on_blocked,
+            export_whitelist_file=confirmed_whitelist_file,
+            merge_export=True,
+            include_rows=True,
+            task_profiles_by_channel=task_profiles_by_channel,
+            debug_raw=debug_raw,
+        )
+        _update_runtime_state_from_probe(
+            account_state,
+            probe_result,
+            blocked_cooldown_seconds=block_cooldown_seconds,
+            now=datetime.now(timezone.utc).astimezone(),
+        )
+        task_profiles_by_channel = _task_profiles_by_channel(account_state, channels)
+
     latest_now = datetime.now(timezone.utc).astimezone()
     latest_active_channels, latest_deferred_channels = _filter_channels_by_cooldown(channels, account_state, latest_now)
-    next_run = _suggest_next_daily_run_time(latest_deferred_channels, latest_now)
+    next_run = _suggest_next_daily_run_time(
+        latest_deferred_channels,
+        latest_now,
+        execute_successful_attempts=execute_aggregate["successful_attempts"],
+        execute_failed_attempts=execute_aggregate["failed_attempts"],
+        execute_no_credit_attempts=execute_aggregate["no_credit_attempts"],
+        execute_blocked_rounds=execute_aggregate["blocked_rounds"],
+        stall_probe_triggered=stall_probe_triggered,
+    )
 
     daily_summary = {
         "selection_mode": selected_mode,
@@ -1785,7 +1930,9 @@ def run_pgsh_daily(
         "execute_rounds": execute_aggregate["rounds"],
         "execute_successful_attempts": execute_aggregate["successful_attempts"],
         "execute_failed_attempts": execute_aggregate["failed_attempts"],
+        "execute_no_credit_attempts": execute_aggregate["no_credit_attempts"],
         "execute_blocked_rounds": execute_aggregate["blocked_rounds"],
+        "stall_probe_triggered": stall_probe_triggered,
         "execute_checkin_skipped_accounts": execute_result["summary"].get("checkin_skipped_accounts"),
         "state_recovered": bool(state_load.get("state_recovered")),
         "errors": len(errors),
@@ -1799,7 +1946,9 @@ def run_pgsh_daily(
         "execute_rounds": daily_summary["execute_rounds"],
         "execute_successful_attempts": daily_summary["execute_successful_attempts"],
         "execute_failed_attempts": daily_summary["execute_failed_attempts"],
+        "execute_no_credit_attempts": daily_summary["execute_no_credit_attempts"],
         "execute_blocked_rounds": daily_summary["execute_blocked_rounds"],
+        "stall_probe_triggered": daily_summary["stall_probe_triggered"],
         "deferred_channels": latest_deferred_channels,
         "next_run": next_run,
     }

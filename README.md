@@ -13,6 +13,7 @@
 - CLI 命令入口
 - 接口分析文档
 - PGSH 批量命令的结构化输出与单账号测试入口
+- PGSH daily 冷却状态跟踪、自动补探测与 confirmed whitelist 自修复
 
 ## 当前命令
 
@@ -65,7 +66,7 @@ python -m src.cli hsh798-snapshot --accounts configs/accounts.json --output-dir 
 备注：参考仓库/抓包素材不固定纳入此项目目录时，请以 `docs/REFERENCE_ANALYSIS.md` 与相关 notes 为准。
 
 ## 下一步
-- 收口 PGSH 真账号验证与执行策略
+- 继续收口 PGSH 真账号验证与执行策略
 - 深挖惠生活798积分/任务相关接口
-- 增加批量账号执行与结果汇总
-- 增加日志落盘与失败重试
+- 增强批量账号执行与跨账号结果汇总
+- 增加更细的日志落盘、失败分类与回退策略

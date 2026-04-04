@@ -54,9 +54,13 @@ For scheduling and status checks, prefer:
 - `automation_summary.should_run_now`
 - `automation_summary.suggested_not_before`
 - `automation_summary.suggested_command`
+- `automation_summary.execute_no_credit_attempts`
+- `automation_summary.stall_probe_triggered`
 - `summary.execute_successful_attempts`
 - `summary.execute_failed_attempts`
+- `summary.execute_no_credit_attempts`
 - `summary.execute_blocked_rounds`
+- `summary.stall_probe_triggered`
 - `summary.deferred_channels`
 
 ## Design goals
@@ -65,6 +69,9 @@ For scheduling and status checks, prefer:
 - Preserve a stable `*_latest.json` path for automations
 - Store enough context to compare token validity and channel health over time
 - Expose cooldown and retry state without requiring the caller to parse low-level task details
+- Distinguish real execution failures from `no_credit` responses where the API itself still succeeded
+- Auto-trigger a low-frequency probe after a zero-progress daily run so confirmed task codes can self-heal
+- Avoid telling schedulers to rerun immediately when a zero-progress run is followed by a stall probe that still only returns `no_credit`
 
 ## Raw payload mode
 
