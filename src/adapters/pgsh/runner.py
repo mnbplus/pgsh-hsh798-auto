@@ -107,12 +107,20 @@ def run_pgsh_login(
     return result
 
 
-def load_task_whitelist(path: str = "configs/pgsh_task_whitelist.json") -> set[str]:
+def _load_task_whitelist_payload(path: str | None = "configs/pgsh_task_whitelist.json") -> object:
+    if not path:
+        return None
     p = Path(path)
     if not p.exists():
+        return None
+    return json.loads(p.read_text(encoding="utf-8-sig"))
+
+
+def load_task_whitelist(path: str = "configs/pgsh_task_whitelist.json") -> set[str]:
+    raw = _load_task_whitelist_payload(path)
+    if raw is None:
         return set()
 
-    raw = json.loads(p.read_text(encoding="utf-8-sig"))
     if isinstance(raw, dict):
         for key in ("task_codes", "tasks", "whitelist"):
             if isinstance(raw.get(key), list):
@@ -1244,6 +1252,30 @@ def _record_channel_attempts(channel_state: dict, *, attempts_payload: list[dict
             stats["last_outcome"] = outcome or "failure"
 
 
+def _sync_runtime_state_confirmed_whitelist(
+    account_state: dict,
+    *,
+    whitelist_file: str | None,
+    channels: tuple[str, ...],
+) -> None:
+    payload = _load_task_whitelist_payload(whitelist_file)
+    combined_codes = sorted(_extract_task_codes_from_whitelist_payload(payload))
+    payload_channels = payload.get("channels") if isinstance(payload, dict) else None
+    channel_states = account_state.setdefault("channels", {})
+
+    for channel in channels:
+        channel_state = channel_states.setdefault(channel, {})
+        if isinstance(payload_channels, dict):
+            channel_codes = payload_channels.get(channel)
+            if isinstance(channel_codes, list):
+                codes = sorted({str(item).strip() for item in channel_codes if str(item).strip()})
+            else:
+                codes = []
+        else:
+            codes = combined_codes
+        channel_state["confirmed_task_codes"] = codes
+
+
 def _update_runtime_state_from_probe(
     account_state: dict,
     probe_result: dict | None,
@@ -1728,6 +1760,11 @@ def run_pgsh_daily(
         item=selected_account,
         account_index=selected_account_index,
     )
+    _sync_runtime_state_confirmed_whitelist(
+        account_state,
+        whitelist_file=confirmed_whitelist_file,
+        channels=channels,
+    )
     task_profiles_by_channel = _task_profiles_by_channel(account_state, channels)
     active_channels, deferred_channels = (
         _filter_channels_by_cooldown(channels, account_state, now) if respect_cooldown else (channels, [])
@@ -1791,6 +1828,11 @@ def run_pgsh_daily(
             probe_result,
             blocked_cooldown_seconds=block_cooldown_seconds,
             now=datetime.now(timezone.utc).astimezone(),
+        )
+        _sync_runtime_state_confirmed_whitelist(
+            account_state,
+            whitelist_file=confirmed_whitelist_file,
+            channels=channels,
         )
         task_profiles_by_channel = _task_profiles_by_channel(account_state, channels)
         active_channels, deferred_channels = _filter_channels_by_cooldown(
@@ -1899,6 +1941,11 @@ def run_pgsh_daily(
             probe_result,
             blocked_cooldown_seconds=block_cooldown_seconds,
             now=datetime.now(timezone.utc).astimezone(),
+        )
+        _sync_runtime_state_confirmed_whitelist(
+            account_state,
+            whitelist_file=confirmed_whitelist_file,
+            channels=channels,
         )
         task_profiles_by_channel = _task_profiles_by_channel(account_state, channels)
 
