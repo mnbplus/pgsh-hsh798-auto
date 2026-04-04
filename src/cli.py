@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+from urllib.parse import parse_qs, urlparse
 
 import typer
 from loguru import logger
@@ -42,6 +43,49 @@ app = typer.Typer(help="胖乖生活 / 惠生活798 研究工具")
 
 
 app.info.help = "PGSH / HSH798 local automation toolkit"
+
+
+def _flatten_ad_markers(value):
+    markers = []
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key in {"wangmengId", "gromoreId", "hmId", "adType", "channelId", "slotKey"}:
+                markers.append({"key": key, "value": nested})
+            markers.extend(_flatten_ad_markers(nested))
+    elif isinstance(value, list):
+        for item in value:
+            markers.extend(_flatten_ad_markers(item))
+    return markers
+
+
+def _extract_slot_profile(task: dict) -> dict:
+    jump_link = str(task.get("jumpLink") or "")
+    extend_map = task.get("extendMap") or {}
+    parsed = urlparse(jump_link)
+    query = parse_qs(parsed.query)
+    slot_keys = query.get("slotKey") or []
+    ad_tiny = jump_link if jump_link.startswith("ad_tiny_") else None
+    ad_markers = _flatten_ad_markers(extend_map)
+    classifier = []
+    if ad_tiny:
+        classifier.append("ad_tiny")
+    if slot_keys:
+        classifier.append("slot_key")
+    if any(item.get("key") == "wangmengId" for item in ad_markers):
+        classifier.append("wangmeng")
+    if any(item.get("key") == "gromoreId" for item in ad_markers):
+        classifier.append("gromore")
+    if any(item.get("key") == "adType" for item in ad_markers):
+        classifier.append("ad_type")
+    if not classifier:
+        classifier.append("generic")
+    return {
+        "classifier": classifier,
+        "ad_tiny": ad_tiny,
+        "slot_keys": slot_keys,
+        "query_params": query,
+        "ad_markers": ad_markers,
+    }
 
 
 @app.command()
@@ -225,6 +269,7 @@ def pgsh_task_probe(
                         "awardWay": task_item.get("awardWay"),
                         "extendMap": task_item.get("extendMap"),
                         "subtaskList": task_item.get("subtaskList"),
+                        "slot_profile": _extract_slot_profile(task_item),
                     },
                     "query_by_type": query_payload,
                     "query_summary": {
@@ -239,6 +284,9 @@ def pgsh_task_probe(
                         "extendMap": None
                         if not isinstance(query_payload.get("data"), dict)
                         else query_payload.get("data", {}).get("extendMap"),
+                        "slot_profile": None
+                        if not isinstance(query_payload.get("data"), dict)
+                        else _extract_slot_profile(query_payload.get("data") or {}),
                     },
                 }
             )
@@ -316,6 +364,7 @@ def pgsh_ad_analysis(
                     "jumpLink": item.get("jumpLink"),
                     "extendMap": extend_map,
                     "subtaskList": item.get("subtaskList"),
+                    "slot_profile": _extract_slot_profile(item),
                     "learning": {
                         "successes": stats.get("successes", 0),
                         "failures": stats.get("failures", 0),
