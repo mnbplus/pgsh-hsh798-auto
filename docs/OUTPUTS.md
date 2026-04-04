@@ -53,6 +53,7 @@ For scheduling and status checks, prefer:
 - `automation_summary.reason_code`
 - `automation_summary.should_run_now`
 - `automation_summary.suggested_not_before`
+- `automation_summary.wait_seconds`
 - `automation_summary.suggested_command`
 - `automation_summary.execute_no_credit_attempts`
 - `automation_summary.stall_probe_triggered`
@@ -72,6 +73,7 @@ For scheduling and status checks, prefer:
 - Distinguish real execution failures from `no_credit` responses where the API itself still succeeded
 - Auto-trigger a low-frequency probe after a zero-progress daily run so confirmed task codes can self-heal
 - Avoid telling schedulers to rerun immediately when a zero-progress run is followed by a stall probe that still only returns `no_credit`
+- Provide an explicit backoff window for `no_credit_after_stall_probe` so schedulers can defer retries instead of polling blindly
 
 ## Raw payload mode
 

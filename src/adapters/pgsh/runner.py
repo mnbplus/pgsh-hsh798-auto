@@ -33,6 +33,7 @@ DEFAULT_PROBE_MAX_ATTEMPTS_PER_TASK = 1
 DEFAULT_DAILY_CONFIRMED_WHITELIST_FILE = "configs/pgsh_task_whitelist_confirmed.json"
 DEFAULT_DAILY_STATE_FILE = "configs/pgsh_runtime_state.json"
 DEFAULT_DAILY_BLOCK_COOLDOWN_SECONDS = 600.0
+DEFAULT_DAILY_NO_CREDIT_BACKOFF_SECONDS = 21600.0
 
 
 def run_pgsh_login(
@@ -1111,6 +1112,7 @@ def _suggest_next_daily_run_time(
     execute_no_credit_attempts: int = 0,
     execute_blocked_rounds: int = 0,
     stall_probe_triggered: bool = False,
+    no_credit_backoff_seconds: float = DEFAULT_DAILY_NO_CREDIT_BACKOFF_SECONDS,
 ) -> dict:
     if deferred_channels:
         next_times = [_parse_iso_datetime(item.get("blocked_until")) for item in deferred_channels]
@@ -1136,11 +1138,13 @@ def _suggest_next_daily_run_time(
         and execute_no_credit_attempts > 0
         and execute_failed_attempts <= 0
     ):
+        wait_seconds = max(int(no_credit_backoff_seconds), 0)
+        suggested_not_before = (now + timedelta(seconds=wait_seconds)).isoformat(timespec="seconds")
         return {
             "should_retry": False,
             "reason": "no_credit_after_stall_probe",
-            "suggested_not_before": None,
-            "wait_seconds": None,
+            "suggested_not_before": suggested_not_before,
+            "wait_seconds": wait_seconds,
         }
 
     return {
@@ -1734,6 +1738,7 @@ def run_pgsh_daily(
     stop_on_blocked: bool = True,
     max_execute_rounds: int = 1,
     block_cooldown_seconds: float = DEFAULT_DAILY_BLOCK_COOLDOWN_SECONDS,
+    no_credit_backoff_seconds: float = DEFAULT_DAILY_NO_CREDIT_BACKOFF_SECONDS,
     state_file: str = DEFAULT_DAILY_STATE_FILE,
     respect_cooldown: bool = True,
     debug_raw: bool = False,
@@ -1959,6 +1964,7 @@ def run_pgsh_daily(
         execute_no_credit_attempts=execute_aggregate["no_credit_attempts"],
         execute_blocked_rounds=execute_aggregate["blocked_rounds"],
         stall_probe_triggered=stall_probe_triggered,
+        no_credit_backoff_seconds=no_credit_backoff_seconds,
     )
 
     daily_summary = {
@@ -2018,6 +2024,7 @@ def run_pgsh_daily(
             "execute_max_successful_attempts_per_channel": execute_max_successful_attempts_per_channel,
             "max_execute_rounds": max_execute_rounds,
             "block_cooldown_seconds": block_cooldown_seconds,
+            "no_credit_backoff_seconds": no_credit_backoff_seconds,
             "state_file": state_file,
             "state_recovered": bool(state_load.get("state_recovered")),
             "state_recovery_reason": state_load.get("reason"),

@@ -19,6 +19,7 @@ This repo's CLI was tightened on 2026-04-02 to match the examples and the new pe
 - PGSH batch outputs are now returned as `meta` + `summary` + `rows`.
 - PGSH execution/probe summaries now distinguish `no_credit_attempts` from transport/API failures so automation can reason about "接口通了但没拿到积分" separately.
 - `pgsh-daily` no longer suggests an immediate rerun when a zero-progress execution auto-triggers a stall probe and the probe still only returns `no_credit`.
+- `pgsh-daily` now exposes a configurable `--no-credit-backoff-seconds` window so schedulers get a concrete defer-until time for `no_credit_after_stall_probe`.
 - Bundle-producing commands now default to redacted raw payloads. Use `--debug-raw` only when you explicitly need full raw API responses in output files.
 - PGSH signing values can now be overridden through environment variables such as `PGHSH_PGSH_APP_VERSION`, `PGHSH_PGSH_APP_SECRET`, `PGHSH_PGSH_ALIPAY_APP_SECRET`, `PGHSH_PGSH_AUTH_APP_VERSION`, and `PGHSH_PGSH_AUTH_APP_SECRET`.
 - `hsh798-snapshot` can now enrich snapshots with per-device status checks, and `hsh798-safe-start` / `hsh798-safe-stop` provide state-aware control wrappers.
@@ -39,6 +40,7 @@ python -m src.cli pgsh-probe --account-index 0 --channel alipay --max-tasks 5 --
 python -m src.cli pgsh-probe --account-index 0 --channel alipay --max-tasks 3 --export-confirmed-whitelist
 python -m src.cli pgsh-probe --account-index 0 --channel alipay --whitelist configs/pgsh_task_whitelist_confirmed.json --export-whitelist-auto
 python -m src.cli pgsh-daily --account-index 0 --channel alipay --no-refresh-whitelist --state-file configs/pgsh_runtime_state.json
+python -m src.cli pgsh-daily --account-index 0 --channel alipay --no-refresh-whitelist --no-credit-backoff-seconds 21600 --state-file configs/pgsh_runtime_state.json
 python -m src.cli hsh798-login --phone <PHONE> --sms-code <SMS_CODE> --save --account-index 0
 python -m src.cli hsh798-devices --account-index 0
 python -m src.cli hsh798-status --account-index 0 --device-id <DEVICE_ID>
