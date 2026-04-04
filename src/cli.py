@@ -399,6 +399,90 @@ def pgsh_ad_analysis(
     )
 
 
+@app.command(name="pgsh-task-compare-run")
+def pgsh_task_compare_run(
+    task_code: str = typer.Option(..., "--task-code", help="PGSH task code to run once per account for comparison."),
+    account_indexes: list[int] = typer.Option(..., "--account-index", help="Configured PGSH account index to compare. Repeat the flag for multiple accounts."),
+    accounts: str = typer.Option("configs/accounts.json", "--accounts", help="Account store JSON file."),
+    channel: str = typer.Option("android_app", "--channel", help="android_app or alipay."),
+    subtask_code: str | None = typer.Option(None, "--subtask-code", help="Optional subtask code for the comparison run."),
+):
+    channels = normalize_channels(channel)
+    if len(channels) != 1:
+        raise typer.BadParameter("pgsh-task-compare-run currently supports exactly one channel")
+    selected_channel = channels[0]
+    runs = []
+    for account_index in account_indexes:
+        account = resolve_pgsh_account(
+            token=None,
+            phone_brand=None,
+            accounts_file=Path(accounts),
+            account_index=account_index,
+        )
+        with PgshClient(token=account.token, phone_brand=account.phone_brand) as client:
+            balance_before = client.balance()
+            captcha_before = client.captcha_status()
+            task_list_before = client.task_list(channel=selected_channel)
+            before_item = None
+            for item in ((task_list_before.get("data") or {}).get("items") or []):
+                if str(item.get("taskCode") or "").strip() == task_code:
+                    before_item = item
+                    break
+
+            complete_result = client.complete_task(
+                task_code=task_code,
+                channel=selected_channel,
+                subtask_code=subtask_code,
+            )
+
+            balance_after = client.balance()
+            captcha_after = client.captcha_status()
+            task_list_after = client.task_list(channel=selected_channel)
+            after_item = None
+            for item in ((task_list_after.get("data") or {}).get("items") or []):
+                if str(item.get("taskCode") or "").strip() == task_code:
+                    after_item = item
+                    break
+
+        runs.append(
+            {
+                "account_index": account_index,
+                "phone_brand": account.phone_brand,
+                "taskCode": task_code,
+                "channel": selected_channel,
+                "subtask_code": subtask_code,
+                "before": {
+                    "balance": balance_before,
+                    "captcha": captcha_before,
+                    "task": before_item,
+                    "slot_profile": None if before_item is None else _extract_slot_profile(before_item),
+                },
+                "complete": complete_result,
+                "after": {
+                    "balance": balance_after,
+                    "captcha": captcha_after,
+                    "task": after_item,
+                    "slot_profile": None if after_item is None else _extract_slot_profile(after_item),
+                },
+                "delta": {
+                    "balance_integral_before": None if not isinstance(balance_before.get("data"), dict) else balance_before.get("data", {}).get("integral"),
+                    "balance_integral_after": None if not isinstance(balance_after.get("data"), dict) else balance_after.get("data", {}).get("integral"),
+                    "completed_freq_before": None if before_item is None else before_item.get("completedFreq"),
+                    "completed_freq_after": None if after_item is None else after_item.get("completedFreq"),
+                },
+            }
+        )
+
+    echo_json(
+        {
+            "taskCode": task_code,
+            "channel": selected_channel,
+            "subtask_code": subtask_code,
+            "runs": runs,
+        }
+    )
+
+
 @app.command(name="pgsh-complete")
 def pgsh_complete(
     task_code: str = typer.Option(..., "--task-code", help="PGSH task code."),
