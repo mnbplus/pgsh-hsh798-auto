@@ -618,6 +618,7 @@ def pgsh_execute(
     batch_break_jitter_seconds: float = typer.Option(DEFAULT_EXECUTE_BATCH_BREAK_JITTER_SECONDS, "--batch-break-jitter-seconds", help="Random jitter around the batch rest window for high-frequency tasks."),
     batch_min_attempts: int = typer.Option(DEFAULT_EXECUTE_BATCH_MIN_ATTEMPTS, "--batch-min-attempts", min=1, help="Minimum successful ad/video attempts before a batch rest may trigger."),
     batch_max_attempts: int = typer.Option(DEFAULT_EXECUTE_BATCH_MAX_ATTEMPTS, "--batch-max-attempts", min=1, help="Maximum successful ad/video attempts before a batch rest must trigger."),
+    state_file: str | None = typer.Option(None, "--state-file", help="Optional runtime state file used to preload learned task stats for standalone execute runs."),
     debug_raw: bool = typer.Option(False, "--debug-raw/--redact-raw", help="Include full raw API payloads in output files."),
 ):
     selected_account, selected_account_index = resolve_pgsh_batch_selection(
@@ -643,6 +644,7 @@ def pgsh_execute(
             batch_break_jitter_seconds=batch_break_jitter_seconds,
             batch_min_attempts=batch_min_attempts,
             batch_max_attempts=batch_max_attempts,
+            state_file=state_file,
             debug_raw=debug_raw,
         )
     )

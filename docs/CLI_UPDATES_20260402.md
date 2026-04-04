@@ -21,6 +21,7 @@ This repo's CLI was tightened on 2026-04-02 to match the examples and the new pe
 - `pgsh-daily` no longer suggests an immediate rerun when a zero-progress execution auto-triggers a stall probe and the probe still only returns `no_credit`.
 - `pgsh-daily` now exposes a configurable `--no-credit-backoff-seconds` window so schedulers get a concrete defer-until time for `no_credit_after_stall_probe`.
 - `pgsh-execute` / `pgsh-daily` now support batch-rest controls for high-frequency ad/video tasks, so execution can pause after a small randomized batch instead of hammering straight through.
+- Standalone `pgsh-execute` can now preload runtime learning from `--state-file`, allowing dry-run and manual execute flows to inherit learned attempt budgets instead of always using a flat per-task cap.
 - Bundle-producing commands now default to redacted raw payloads. Use `--debug-raw` only when you explicitly need full raw API responses in output files.
 - PGSH signing values can now be overridden through environment variables such as `PGHSH_PGSH_APP_VERSION`, `PGHSH_PGSH_APP_SECRET`, `PGHSH_PGSH_ALIPAY_APP_SECRET`, `PGHSH_PGSH_AUTH_APP_VERSION`, and `PGHSH_PGSH_AUTH_APP_SECRET`.
 - `hsh798-snapshot` can now enrich snapshots with per-device status checks, and `hsh798-safe-start` / `hsh798-safe-stop` provide state-aware control wrappers.

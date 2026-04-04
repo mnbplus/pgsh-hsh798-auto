@@ -203,6 +203,29 @@ def _task_learning_snapshot(task_profiles: dict[str, dict] | None, task_code: st
     }
 
 
+def _learned_attempt_budget(task_meta: dict, task_profiles: dict[str, dict] | None, max_attempts_per_task: int | None) -> int:
+    attempts_remaining = max(int(task_meta.get("attemptsRemaining") or 0), 0)
+    if attempts_remaining <= 0:
+        return 0
+
+    learning = _task_learning_snapshot(task_profiles, task_meta["taskCode"])
+    title = str(task_meta.get("title") or "")
+    high_frequency_action = any(keyword in title for keyword in ("广告", "视频"))
+
+    if max_attempts_per_task is None:
+        base_budget = attempts_remaining
+    else:
+        base_budget = min(attempts_remaining, max_attempts_per_task)
+
+    if high_frequency_action and learning["successes"] > 0 and learning["no_credit"] <= 0:
+        return attempts_remaining if max_attempts_per_task is None else min(attempts_remaining, max(base_budget, learning["successes"] + 1))
+
+    if learning["last_outcome"] == "no_credit" and learning["no_credit"] >= 1 and learning["successes"] <= 0:
+        return min(base_budget, 1)
+
+    return base_budget
+
+
 def _execute_task_priority(task_meta: dict, task_profiles: dict[str, dict] | None) -> tuple:
     learning = _task_learning_snapshot(task_profiles, task_meta["taskCode"])
     total = learning["successes"] + learning["failures"] + learning["no_credit"]
@@ -343,7 +366,7 @@ def _execute_channel(
             continue
 
         result["eligible_tasks"] += 1
-        attempts_planned = attempts if max_attempts_per_task is None else min(attempts, max_attempts_per_task)
+        attempts_planned = _learned_attempt_budget(task_meta, task_profiles, max_attempts_per_task)
         result["planned_attempts"] += attempts_planned
         action = {
             **task_meta,
@@ -1567,6 +1590,7 @@ def run_pgsh_execute(
     batch_break_jitter_seconds: float = DEFAULT_EXECUTE_BATCH_BREAK_JITTER_SECONDS,
     batch_min_attempts: int = DEFAULT_EXECUTE_BATCH_MIN_ATTEMPTS,
     batch_max_attempts: int = DEFAULT_EXECUTE_BATCH_MAX_ATTEMPTS,
+    state_file: str | None = None,
     skip_checkin: bool = False,
     include_rows: bool = False,
     task_profiles_by_channel: dict[str, dict[str, dict]] | None = None,
@@ -1580,8 +1604,17 @@ def run_pgsh_execute(
         selected_account_index=selected_account_index,
     )
 
+    runtime_state = None
+    if task_profiles_by_channel is None and state_file:
+        runtime_state, _ = load_pgsh_runtime_state(state_file)
+
     rows = []
     for account_index, item, source in targets:
+        row_task_profiles = task_profiles_by_channel
+        if row_task_profiles is None and runtime_state is not None:
+            account_key = _account_state_key(item, account_index)
+            account_state = (runtime_state.get("accounts") or {}).get(account_key) or {}
+            row_task_profiles = _task_profiles_by_channel(account_state, channels)
         with PgshClient(token=item.token, phone_brand=item.phone_brand) as client:
             rows.append(
                 _build_execute_row(
@@ -1601,7 +1634,7 @@ def run_pgsh_execute(
                     batch_min_attempts=batch_min_attempts,
                     batch_max_attempts=batch_max_attempts,
                     skip_checkin=skip_checkin,
-                    task_profiles_by_channel=task_profiles_by_channel,
+                    task_profiles_by_channel=row_task_profiles,
                 )
             )
 
@@ -1627,6 +1660,7 @@ def run_pgsh_execute(
                 "batch_break_jitter_seconds": batch_break_jitter_seconds,
                 "batch_min_attempts": batch_min_attempts,
                 "batch_max_attempts": batch_max_attempts,
+                "state_file": state_file,
                 "skip_checkin": skip_checkin,
             },
         ),
