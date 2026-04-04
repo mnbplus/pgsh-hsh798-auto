@@ -34,6 +34,10 @@ DEFAULT_DAILY_CONFIRMED_WHITELIST_FILE = "configs/pgsh_task_whitelist_confirmed.
 DEFAULT_DAILY_STATE_FILE = "configs/pgsh_runtime_state.json"
 DEFAULT_DAILY_BLOCK_COOLDOWN_SECONDS = 600.0
 DEFAULT_DAILY_NO_CREDIT_BACKOFF_SECONDS = 21600.0
+DEFAULT_EXECUTE_BATCH_BREAK_SECONDS = 0.0
+DEFAULT_EXECUTE_BATCH_BREAK_JITTER_SECONDS = 0.0
+DEFAULT_EXECUTE_BATCH_MIN_ATTEMPTS = 6
+DEFAULT_EXECUTE_BATCH_MAX_ATTEMPTS = 10
 
 
 def run_pgsh_login(
@@ -291,6 +295,10 @@ def _execute_channel(
     delay_jitter_seconds: float,
     max_attempts_per_task: int | None,
     max_successful_attempts: int | None,
+    batch_break_seconds: float = DEFAULT_EXECUTE_BATCH_BREAK_SECONDS,
+    batch_break_jitter_seconds: float = DEFAULT_EXECUTE_BATCH_BREAK_JITTER_SECONDS,
+    batch_min_attempts: int = DEFAULT_EXECUTE_BATCH_MIN_ATTEMPTS,
+    batch_max_attempts: int = DEFAULT_EXECUTE_BATCH_MAX_ATTEMPTS,
 ) -> dict:
     payload = client.task_list(channel=channel)
     tasks = _task_items(payload)
@@ -311,6 +319,7 @@ def _execute_channel(
         "blocked_reason": None,
         "soft_stopped": False,
         "soft_stop_reason": None,
+        "batch_breaks": 0,
         "actions": [],
         "skipped": [],
         "raw": payload,
@@ -356,6 +365,23 @@ def _execute_channel(
     eligible_actions.sort(key=lambda action: _execute_task_priority(action, task_profiles))
     remaining_attempts = {action["taskCode"]: action["attempts_planned"] for action in eligible_actions}
     disabled_tasks: set[str] = set()
+    high_frequency_titles = ("广告", "视频")
+    high_frequency_actions = [
+        action
+        for action in eligible_actions
+        if any(keyword in str(action.get("title") or "") for keyword in high_frequency_titles)
+    ]
+    batch_break_enabled = bool(
+        high_frequency_actions
+        and (batch_break_seconds > 0 or batch_break_jitter_seconds > 0)
+        and batch_max_attempts > 0
+    )
+    if batch_break_enabled:
+        batch_min_attempts = max(1, batch_min_attempts)
+        batch_max_attempts = max(batch_min_attempts, batch_max_attempts)
+        batch_attempts_until_break = random.randint(batch_min_attempts, batch_max_attempts)
+    else:
+        batch_attempts_until_break = None
 
     while not result["blocked"] and any(count > 0 for count in remaining_attempts.values()):
         if max_successful_attempts is not None and result["successful_attempts"] >= max_successful_attempts:
@@ -383,10 +409,19 @@ def _execute_channel(
                 action["attempts"].append(
                     {"attempt": attempt_no, "success": success, "outcome": outcome, "response": response}
                 )
+                is_high_frequency_action = any(
+                    keyword in str(action.get("title") or "") for keyword in high_frequency_titles
+                )
                 if success:
                     result["successful_attempts"] += 1
                     remaining_attempts[code] -= 1
                     _sleep_with_jitter(delay_seconds, delay_jitter_seconds)
+                    if batch_break_enabled and is_high_frequency_action and batch_attempts_until_break is not None:
+                        batch_attempts_until_break -= 1
+                        if batch_attempts_until_break <= 0:
+                            result["batch_breaks"] += 1
+                            _sleep_with_jitter(batch_break_seconds, batch_break_jitter_seconds)
+                            batch_attempts_until_break = random.randint(batch_min_attempts, batch_max_attempts)
                     continue
 
                 if outcome == "blocked":
@@ -641,6 +676,10 @@ def _build_execute_row(
     delay_jitter_seconds: float,
     max_attempts_per_task: int | None,
     max_successful_attempts_per_channel: int | None,
+    batch_break_seconds: float,
+    batch_break_jitter_seconds: float,
+    batch_min_attempts: int,
+    batch_max_attempts: int,
     skip_checkin: bool,
     task_profiles_by_channel: dict[str, dict[str, dict]] | None,
 ) -> dict:
@@ -670,6 +709,7 @@ def _build_execute_row(
         "failed_attempts": 0,
         "no_credit_attempts": 0,
         "dry_run_attempts": 0,
+        "batch_breaks": 0,
         "checkin_skipped": dry_run or skip_checkin,
         "checkin_success": bool(PgshClient.response_ok(checkin)),
         "error_count": 0,
@@ -687,6 +727,10 @@ def _build_execute_row(
                 delay_jitter_seconds=delay_jitter_seconds,
                 max_attempts_per_task=max_attempts_per_task,
                 max_successful_attempts=max_successful_attempts_per_channel,
+                batch_break_seconds=batch_break_seconds,
+                batch_break_jitter_seconds=batch_break_jitter_seconds,
+                batch_min_attempts=batch_min_attempts,
+                batch_max_attempts=batch_max_attempts,
             )
             row["execution"][channel] = execution
             if execution["api_ok"]:
@@ -704,6 +748,7 @@ def _build_execute_row(
             summary["failed_attempts"] += execution["failed_attempts"]
             summary["no_credit_attempts"] += execution.get("no_credit_attempts", 0)
             summary["dry_run_attempts"] += execution["dry_run_attempts"]
+            summary["batch_breaks"] += execution.get("batch_breaks", 0)
             summary["blocked_channels"] += 1 if execution.get("blocked") else 0
         except Exception as exc:
             row["execution"][channel] = {"channel": channel, "error": str(exc)}
@@ -874,6 +919,7 @@ def _execute_bundle_summary(
         "failed_attempts": sum(row.get("summary", {}).get("failed_attempts", 0) for row in rows),
         "no_credit_attempts": sum(row.get("summary", {}).get("no_credit_attempts", 0) for row in rows),
         "dry_run_attempts": sum(row.get("summary", {}).get("dry_run_attempts", 0) for row in rows),
+        "batch_breaks": sum(row.get("summary", {}).get("batch_breaks", 0) for row in rows),
         "whitelist_size": whitelist_size,
         "dry_run": dry_run,
     }
@@ -1517,6 +1563,10 @@ def run_pgsh_execute(
     delay_jitter_seconds: float = DEFAULT_EXECUTE_DELAY_JITTER_SECONDS,
     max_attempts_per_task: int | None = DEFAULT_EXECUTE_MAX_ATTEMPTS_PER_TASK,
     max_successful_attempts_per_channel: int | None = DEFAULT_EXECUTE_MAX_SUCCESSES_PER_CHANNEL,
+    batch_break_seconds: float = DEFAULT_EXECUTE_BATCH_BREAK_SECONDS,
+    batch_break_jitter_seconds: float = DEFAULT_EXECUTE_BATCH_BREAK_JITTER_SECONDS,
+    batch_min_attempts: int = DEFAULT_EXECUTE_BATCH_MIN_ATTEMPTS,
+    batch_max_attempts: int = DEFAULT_EXECUTE_BATCH_MAX_ATTEMPTS,
     skip_checkin: bool = False,
     include_rows: bool = False,
     task_profiles_by_channel: dict[str, dict[str, dict]] | None = None,
@@ -1546,6 +1596,10 @@ def run_pgsh_execute(
                     delay_jitter_seconds=delay_jitter_seconds,
                     max_attempts_per_task=max_attempts_per_task,
                     max_successful_attempts_per_channel=max_successful_attempts_per_channel,
+                    batch_break_seconds=batch_break_seconds,
+                    batch_break_jitter_seconds=batch_break_jitter_seconds,
+                    batch_min_attempts=batch_min_attempts,
+                    batch_max_attempts=batch_max_attempts,
                     skip_checkin=skip_checkin,
                     task_profiles_by_channel=task_profiles_by_channel,
                 )
@@ -1569,6 +1623,10 @@ def run_pgsh_execute(
                 "delay_jitter_seconds": delay_jitter_seconds,
                 "max_attempts_per_task": max_attempts_per_task,
                 "max_successful_attempts_per_channel": max_successful_attempts_per_channel,
+                "batch_break_seconds": batch_break_seconds,
+                "batch_break_jitter_seconds": batch_break_jitter_seconds,
+                "batch_min_attempts": batch_min_attempts,
+                "batch_max_attempts": batch_max_attempts,
                 "skip_checkin": skip_checkin,
             },
         ),
@@ -1735,6 +1793,10 @@ def run_pgsh_daily(
     execute_delay_jitter_seconds: float = DEFAULT_EXECUTE_DELAY_JITTER_SECONDS,
     execute_max_attempts_per_task: int | None = DEFAULT_EXECUTE_MAX_ATTEMPTS_PER_TASK,
     execute_max_successful_attempts_per_channel: int | None = DEFAULT_EXECUTE_MAX_SUCCESSES_PER_CHANNEL,
+    execute_batch_break_seconds: float = DEFAULT_EXECUTE_BATCH_BREAK_SECONDS,
+    execute_batch_break_jitter_seconds: float = DEFAULT_EXECUTE_BATCH_BREAK_JITTER_SECONDS,
+    execute_batch_min_attempts: int = DEFAULT_EXECUTE_BATCH_MIN_ATTEMPTS,
+    execute_batch_max_attempts: int = DEFAULT_EXECUTE_BATCH_MAX_ATTEMPTS,
     stop_on_blocked: bool = True,
     max_execute_rounds: int = 1,
     block_cooldown_seconds: float = DEFAULT_DAILY_BLOCK_COOLDOWN_SECONDS,
@@ -1880,6 +1942,10 @@ def run_pgsh_daily(
             delay_jitter_seconds=execute_delay_jitter_seconds,
             max_attempts_per_task=execute_max_attempts_per_task,
             max_successful_attempts_per_channel=execute_max_successful_attempts_per_channel,
+            batch_break_seconds=execute_batch_break_seconds,
+            batch_break_jitter_seconds=execute_batch_break_jitter_seconds,
+            batch_min_attempts=execute_batch_min_attempts,
+            batch_max_attempts=execute_batch_max_attempts,
             skip_checkin=True,
             include_rows=True,
             task_profiles_by_channel=task_profiles_by_channel,
@@ -2022,6 +2088,10 @@ def run_pgsh_daily(
             "execute_delay_jitter_seconds": execute_delay_jitter_seconds,
             "execute_max_attempts_per_task": execute_max_attempts_per_task,
             "execute_max_successful_attempts_per_channel": execute_max_successful_attempts_per_channel,
+            "execute_batch_break_seconds": execute_batch_break_seconds,
+            "execute_batch_break_jitter_seconds": execute_batch_break_jitter_seconds,
+            "execute_batch_min_attempts": execute_batch_min_attempts,
+            "execute_batch_max_attempts": execute_batch_max_attempts,
             "max_execute_rounds": max_execute_rounds,
             "block_cooldown_seconds": block_cooldown_seconds,
             "no_credit_backoff_seconds": no_credit_backoff_seconds,

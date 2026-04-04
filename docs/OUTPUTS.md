@@ -63,6 +63,11 @@ For scheduling and status checks, prefer:
 - `summary.execute_blocked_rounds`
 - `summary.stall_probe_triggered`
 - `summary.deferred_channels`
+- `execute.summary.batch_breaks`
+- `execute.meta.batch_break_seconds`
+- `execute.meta.batch_break_jitter_seconds`
+- `execute.meta.batch_min_attempts`
+- `execute.meta.batch_max_attempts`
 
 ## Design goals
 
@@ -74,6 +79,7 @@ For scheduling and status checks, prefer:
 - Auto-trigger a low-frequency probe after a zero-progress daily run so confirmed task codes can self-heal
 - Avoid telling schedulers to rerun immediately when a zero-progress run is followed by a stall probe that still only returns `no_credit`
 - Provide an explicit backoff window for `no_credit_after_stall_probe` so schedulers can defer retries instead of polling blindly
+- Let high-frequency ad/video tasks pause after a small randomized batch so execution cadence looks less bursty and is easier to tune
 
 ## Raw payload mode
 

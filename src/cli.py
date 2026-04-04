@@ -285,6 +285,10 @@ def pgsh_execute(
     delay_jitter_seconds: float = typer.Option(DEFAULT_EXECUTE_DELAY_JITTER_SECONDS, "--delay-jitter-seconds", help="Random jitter around the delay between successful attempts."),
     max_attempts_per_task: int | None = typer.Option(DEFAULT_EXECUTE_MAX_ATTEMPTS_PER_TASK, "--max-attempts-per-task", min=1, help="Cap how many times one task can be attempted in a single execution round."),
     max_successful_attempts_per_channel: int | None = typer.Option(DEFAULT_EXECUTE_MAX_SUCCESSES_PER_CHANNEL, "--max-successful-attempts-per-channel", min=1, help="Stop a channel early after this many successful attempts in one round."),
+    batch_break_seconds: float = typer.Option(DEFAULT_EXECUTE_BATCH_BREAK_SECONDS, "--batch-break-seconds", help="Rest window inserted after a batch of successful high-frequency tasks such as ad/video tasks."),
+    batch_break_jitter_seconds: float = typer.Option(DEFAULT_EXECUTE_BATCH_BREAK_JITTER_SECONDS, "--batch-break-jitter-seconds", help="Random jitter around the batch rest window for high-frequency tasks."),
+    batch_min_attempts: int = typer.Option(DEFAULT_EXECUTE_BATCH_MIN_ATTEMPTS, "--batch-min-attempts", min=1, help="Minimum successful ad/video attempts before a batch rest may trigger."),
+    batch_max_attempts: int = typer.Option(DEFAULT_EXECUTE_BATCH_MAX_ATTEMPTS, "--batch-max-attempts", min=1, help="Maximum successful ad/video attempts before a batch rest must trigger."),
     debug_raw: bool = typer.Option(False, "--debug-raw/--redact-raw", help="Include full raw API payloads in output files."),
 ):
     selected_account, selected_account_index = resolve_pgsh_batch_selection(
@@ -306,6 +310,10 @@ def pgsh_execute(
             delay_jitter_seconds=delay_jitter_seconds,
             max_attempts_per_task=max_attempts_per_task,
             max_successful_attempts_per_channel=max_successful_attempts_per_channel,
+            batch_break_seconds=batch_break_seconds,
+            batch_break_jitter_seconds=batch_break_jitter_seconds,
+            batch_min_attempts=batch_min_attempts,
+            batch_max_attempts=batch_max_attempts,
             debug_raw=debug_raw,
         )
     )
@@ -379,6 +387,10 @@ def pgsh_daily(
     execute_delay_jitter_seconds: float = typer.Option(DEFAULT_EXECUTE_DELAY_JITTER_SECONDS, "--execute-delay-jitter-seconds", help="Random jitter around the execution delay."),
     execute_max_attempts_per_task: int | None = typer.Option(DEFAULT_EXECUTE_MAX_ATTEMPTS_PER_TASK, "--execute-max-attempts-per-task", min=1, help="Cap how many times one task can be attempted in a single execution round."),
     execute_max_successful_attempts_per_channel: int | None = typer.Option(DEFAULT_EXECUTE_MAX_SUCCESSES_PER_CHANNEL, "--execute-max-successful-attempts-per-channel", min=1, help="Stop a channel early after this many successful attempts in one daily execution round."),
+    execute_batch_break_seconds: float = typer.Option(DEFAULT_EXECUTE_BATCH_BREAK_SECONDS, "--execute-batch-break-seconds", help="Rest window inserted after a batch of successful ad/video tasks during execution."),
+    execute_batch_break_jitter_seconds: float = typer.Option(DEFAULT_EXECUTE_BATCH_BREAK_JITTER_SECONDS, "--execute-batch-break-jitter-seconds", help="Random jitter around the execution batch rest window."),
+    execute_batch_min_attempts: int = typer.Option(DEFAULT_EXECUTE_BATCH_MIN_ATTEMPTS, "--execute-batch-min-attempts", min=1, help="Minimum successful ad/video attempts before a daily execution batch rest may trigger."),
+    execute_batch_max_attempts: int = typer.Option(DEFAULT_EXECUTE_BATCH_MAX_ATTEMPTS, "--execute-batch-max-attempts", min=1, help="Maximum successful ad/video attempts before a daily execution batch rest must trigger."),
     stop_on_blocked: bool = typer.Option(True, "--stop-on-blocked/--keep-going", help="Stop probing a channel after an HTTP block."),
     max_execute_rounds: int = typer.Option(1, "--max-execute-rounds", min=1, help="How many execution rounds to run before stopping."),
     block_cooldown_seconds: float = typer.Option(DEFAULT_DAILY_BLOCK_COOLDOWN_SECONDS, "--block-cooldown-seconds", help="Wait this long before retrying the next execution round after an HTTP block."),
@@ -409,6 +421,10 @@ def pgsh_daily(
             execute_delay_jitter_seconds=execute_delay_jitter_seconds,
             execute_max_attempts_per_task=execute_max_attempts_per_task,
             execute_max_successful_attempts_per_channel=execute_max_successful_attempts_per_channel,
+            execute_batch_break_seconds=execute_batch_break_seconds,
+            execute_batch_break_jitter_seconds=execute_batch_break_jitter_seconds,
+            execute_batch_min_attempts=execute_batch_min_attempts,
+            execute_batch_max_attempts=execute_batch_max_attempts,
             stop_on_blocked=stop_on_blocked,
             max_execute_rounds=max_execute_rounds,
             block_cooldown_seconds=block_cooldown_seconds,

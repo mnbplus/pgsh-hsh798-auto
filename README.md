@@ -14,6 +14,7 @@
 - 接口分析文档
 - PGSH 批量命令的结构化输出与单账号测试入口
 - PGSH daily 冷却状态跟踪、自动补探测与 confirmed whitelist 自修复
+- PGSH 高频广告/视频任务的分批执行与组间休息节奏控制
 
 ## 当前命令
 
@@ -35,10 +36,12 @@ python -m src.cli pgsh-snapshot --accounts configs/accounts.json --output-dir ou
 python -m src.cli pgsh-snapshot --account-index 0 --channel android_app
 python -m src.cli pgsh-execute --accounts configs/accounts.json --whitelist configs/pgsh_task_whitelist.json --output-dir outputs
 python -m src.cli pgsh-execute --account-index 0 --channel android_app --dry-run
+python -m src.cli pgsh-execute --account-index 0 --channel alipay --batch-break-seconds 20 --batch-break-jitter-seconds 10 --batch-min-attempts 6 --batch-max-attempts 10
 python -m src.cli pgsh-probe --account-index 0 --channel alipay --max-tasks 5 --delay-seconds 3
 python -m src.cli pgsh-probe --account-index 0 --channel alipay --max-tasks 3 --export-confirmed-whitelist
 python -m src.cli pgsh-probe --account-index 0 --channel alipay --whitelist configs/pgsh_task_whitelist_confirmed.json --export-whitelist-auto
 python -m src.cli pgsh-daily --account-index 0 --channel alipay --no-refresh-whitelist --state-file configs/pgsh_runtime_state.json
+python -m src.cli pgsh-daily --account-index 0 --channel alipay --no-refresh-whitelist --execute-batch-break-seconds 20 --execute-batch-break-jitter-seconds 10 --execute-batch-min-attempts 6 --execute-batch-max-attempts 10 --state-file configs/pgsh_runtime_state.json
 python -m src.cli hsh798-captcha --s <S> --r <R>
 python -m src.cli hsh798-send-sms --s <S> --auth-code <CAPTCHA_TEXT> --phone <PHONE>
 python -m src.cli hsh798-login --phone <PHONE> --sms-code <SMS_CODE>

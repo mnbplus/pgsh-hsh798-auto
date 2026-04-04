@@ -20,6 +20,7 @@ This repo's CLI was tightened on 2026-04-02 to match the examples and the new pe
 - PGSH execution/probe summaries now distinguish `no_credit_attempts` from transport/API failures so automation can reason about "接口通了但没拿到积分" separately.
 - `pgsh-daily` no longer suggests an immediate rerun when a zero-progress execution auto-triggers a stall probe and the probe still only returns `no_credit`.
 - `pgsh-daily` now exposes a configurable `--no-credit-backoff-seconds` window so schedulers get a concrete defer-until time for `no_credit_after_stall_probe`.
+- `pgsh-execute` / `pgsh-daily` now support batch-rest controls for high-frequency ad/video tasks, so execution can pause after a small randomized batch instead of hammering straight through.
 - Bundle-producing commands now default to redacted raw payloads. Use `--debug-raw` only when you explicitly need full raw API responses in output files.
 - PGSH signing values can now be overridden through environment variables such as `PGHSH_PGSH_APP_VERSION`, `PGHSH_PGSH_APP_SECRET`, `PGHSH_PGSH_ALIPAY_APP_SECRET`, `PGHSH_PGSH_AUTH_APP_VERSION`, and `PGHSH_PGSH_AUTH_APP_SECRET`.
 - `hsh798-snapshot` can now enrich snapshots with per-device status checks, and `hsh798-safe-start` / `hsh798-safe-stop` provide state-aware control wrappers.
@@ -36,10 +37,12 @@ python -m src.cli pgsh-snapshot --account-index 0 --channel android_app --debug-
 python -m src.cli pgsh-snapshot --account-index 0 --channel android_app
 python -m src.cli pgsh-execute --accounts configs/accounts.json --whitelist configs/pgsh_task_whitelist.json --output-dir outputs --channel all
 python -m src.cli pgsh-execute --account-index 0 --channel android_app --dry-run
+python -m src.cli pgsh-execute --account-index 0 --channel alipay --batch-break-seconds 20 --batch-break-jitter-seconds 10 --batch-min-attempts 6 --batch-max-attempts 10
 python -m src.cli pgsh-probe --account-index 0 --channel alipay --max-tasks 5 --delay-seconds 3
 python -m src.cli pgsh-probe --account-index 0 --channel alipay --max-tasks 3 --export-confirmed-whitelist
 python -m src.cli pgsh-probe --account-index 0 --channel alipay --whitelist configs/pgsh_task_whitelist_confirmed.json --export-whitelist-auto
 python -m src.cli pgsh-daily --account-index 0 --channel alipay --no-refresh-whitelist --state-file configs/pgsh_runtime_state.json
+python -m src.cli pgsh-daily --account-index 0 --channel alipay --no-refresh-whitelist --execute-batch-break-seconds 20 --execute-batch-break-jitter-seconds 10 --execute-batch-min-attempts 6 --execute-batch-max-attempts 10 --state-file configs/pgsh_runtime_state.json
 python -m src.cli pgsh-daily --account-index 0 --channel alipay --no-refresh-whitelist --no-credit-backoff-seconds 21600 --state-file configs/pgsh_runtime_state.json
 python -m src.cli hsh798-login --phone <PHONE> --sms-code <SMS_CODE> --save --account-index 0
 python -m src.cli hsh798-devices --account-index 0
